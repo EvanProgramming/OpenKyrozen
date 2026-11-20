@@ -105,6 +105,42 @@ class ActorRelayStub:
 
 
 class V3MatchedLiveTests(unittest.TestCase):
+    def test_formal_responses_delegation_records_original_actor_lineage(self):
+        from types import SimpleNamespace
+        from benchmarks import v3_matched_live as live
+        from benchmarks.v3_deepseek import DEEPSEEK_RESPONSES_RELAY_CONFIG
+
+        fixture = next(item for item in FIXTURES if item["category"] == "subagents")
+        source = Path(live.__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            budget = BudgetLedger(root / "budget.sqlite3", prior_hold_rmb="0")
+            relay = SimpleNamespace(label=None, url="http://127.0.0.1:1", client_key="local",
+                config=DEEPSEEK_RESPONSES_RELAY_CONFIG, actor_keys=(), rows=[], root_actor_id_by_label={},
+                issue_actor_config=lambda actor: {"api_key": actor}, revoke_actor=lambda _actor: None)
+
+            def worker(command, *, provider_config, **_options):
+                for actor in ("root", "child"):
+                    provider_config(actor)
+                    owner = relay.root_actor_id_by_label.get(relay.label)
+                    arm, fixture_id, repeat = relay.label
+                    relay.rows.append({"arm": arm, "fixture_id": fixture_id, "repeat": repeat, "status": "settled",
+                        "actor_id": actor, "root_actor_id": owner,
+                        "actor_role": ("root" if actor == owner else "descendant") if owner else None,
+                        "actual_rmb": "0.001", "usage": {"input_tokens": 10, "output_tokens": 2,
+                        "cache_read_tokens": 0, "cache_write_tokens": 0}})
+                Path(command[command.index("--result") + 1]).write_bytes(worker_result_bytes())
+                return 0, ""
+
+            with patch.object(live, "_run_worker", side_effect=worker):
+                row = live._execute_cell(temporary_root=root, repeat=0, fixture=fixture,
+                    arm="v3", arm_source=source, candidate="candidate", identity=live.apparatus_identity(),
+                    worker_script=source / "benchmarks/prompt_worker.py", relay=relay,
+                    model="deepseek-flash", output=root / "report.json", api_key="offline", budget=budget)
+            self.assertEqual(list(relay.root_actor_id_by_label.values()), ["root"])
+            self.assertTrue(row["delegation_exercised"])
+            self.assertTrue(live._verify_settled_cell(row, relay.rows))
+
     def test_cell_provider_safety_requires_parent_error_and_settlement_evidence(self):
         from types import SimpleNamespace
         from benchmarks import v3_matched_live as live

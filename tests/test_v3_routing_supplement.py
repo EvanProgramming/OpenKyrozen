@@ -827,6 +827,23 @@ class SupplementRunnerTests(unittest.TestCase):
         self.assertEqual(read_prior_exposure([root/'core.db']).total_cny,
                          read_prior_exposure([root/'core.db',root/'supp.db']).total_cny)
 
+    def test_responses_supplement_rejects_historical_calls_relabelled_as_formal(self):
+        from dataclasses import asdict
+        from benchmarks.v3_deepseek import DEEPSEEK_RESPONSES_RELAY_CONFIG
+        from benchmarks.v3_matched_live import _write_checkpoint
+
+        root, identity = self.prepare()
+        core = json.loads((root / "core.json").read_text())
+        core["relay_config"] = asdict(DEEPSEEK_RESPONSES_RELAY_CONFIG)
+        _write_checkpoint(root / "core.json", root / "core.db", core)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("mixed transport reached provider boundary")
+
+        with self.assertRaisesRegex(ValueError, "different provider protocol"):
+            self.call(root, identity, forbidden, forbidden, forbidden)
+        self.assertFalse((root / "supp.db").exists())
+
     def test_missing_or_tampered_core_preflight_stops_before_credentials(self):
         from benchmarks.v3_matched_live import _write_checkpoint
         for change in ('missing','tampered'):

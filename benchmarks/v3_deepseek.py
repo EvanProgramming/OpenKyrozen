@@ -17,7 +17,7 @@ import sqlite3
 import secrets
 
 from benchmarks.v3_matched import BudgetLedger, Pricing, _picormb
-from benchmarks.v3_responses_relay import RelayConfig, StrictChatRelayConfig
+from benchmarks.v3_responses_relay import DeepSeekResponsesRelayConfig, RelayConfig, StrictChatRelayConfig
 from benchmarks.v3_panstar import PanstarPolicy, native_usage
 
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
@@ -39,6 +39,8 @@ DEEPSEEK_RELAY_CONFIG = RelayConfig(
     fixed_input_token_bound=1_000_000, serial_requests=True,
 )
 DEEPSEEK_STRICT_RELAY_CONFIG = StrictChatRelayConfig(**asdict(DEEPSEEK_RELAY_CONFIG))
+DEEPSEEK_RESPONSES_RELAY_CONFIG = DeepSeekResponsesRelayConfig(**asdict(DEEPSEEK_RELAY_CONFIG))
+DEEPSEEK_FIXED_CONFIGS = (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG, DEEPSEEK_RESPONSES_RELAY_CONFIG)
 PRO_MODEL = "deepseek-v4-pro"
 MODEL_ROUTING_ARMS = frozenset({"routing-model-auto", "routing-model-simple"})
 _PRO_RATES = {"input_per_million": "9", "output_per_million": "27",
@@ -970,9 +972,10 @@ def run_smoke(relay, candidate: str) -> bool:
         return result if isinstance(result, dict) else None
 
     try:
+        choice = ({"type": "function", "name": "echo_probe"}
+                  if getattr(getattr(relay, "config", None), "formal_fixed", False) else "auto")
         first = request({"input": history, "tools": tools,
-                         "tool_choice": "auto",
-                         "parallel_tool_calls": False, "stream": False})
+                         "tool_choice": choice, "parallel_tool_calls": False, "stream": False})
         if first is None:
             return False
         output = first.get("output")
@@ -1072,6 +1075,8 @@ def main() -> None:
     parser.add_argument("--prior-ledger", type=Path, action="append", required=True)
     parser.add_argument("--limit-cny", default="15",
                         help="Cumulative cap in CNY up to 15, or explicit 'unlimited' with the full ledger.")
+    parser.add_argument("--responses", action="store_true",
+                        help="Use the fixed Flash Responses transport for a fresh campaign.")
     parser.add_argument("--planning-preflight-only", action="store_true",
                         help="Run both protected preflights, including bug_fix-1 (up to 16 requests), and stop before the formal cohort.")
     args = parser.parse_args()
@@ -1091,10 +1096,11 @@ def main() -> None:
             raise ValueError("invalid cumulative DeepSeek cap") from None
         if not limit.is_finite() or not 0 < limit <= 15 or exposure.total_cny > limit:
             raise ValueError("the cumulative capped DeepSeek campaign must fit within 15 CNY")
+    relay_config = DEEPSEEK_RESPONSES_RELAY_CONFIG if args.responses else DEEPSEEK_STRICT_RELAY_CONFIG
     report = run(source=args.source, repo=args.repo, output=args.output, budget_path=args.budget_db,
                  limit_cny=args.limit_cny, prior_hold_cny=str(exposure.total_cny),
                  prior_hold_records=exposure.records,
-                 pricing=pricing, relay_config=DEEPSEEK_STRICT_RELAY_CONFIG,
+                 pricing=pricing, relay_config=relay_config,
                  endpoint=DEEPSEEK_ENDPOINT, planning_preflight_only=args.planning_preflight_only)
     if args.planning_preflight_only:
         print(json.dumps({"status": report["status"], "planning_preflight": report.get("planning_preflight"),

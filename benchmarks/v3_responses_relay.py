@@ -33,6 +33,11 @@ class RelayConfig:
     fixed_input_token_bound: int | None = None
     serial_requests: bool = False
     strict_chat: ClassVar[bool] = False
+    journal_protocol: ClassVar[str | None] = None
+
+    @property
+    def formal_fixed(self) -> bool:
+        return self.journal_protocol is not None
 
     def __post_init__(self) -> None:
         if (not self.model or type(self.max_output_tokens) is not int or self.max_output_tokens <= 0
@@ -44,6 +49,12 @@ class RelayConfig:
 @dataclass(frozen=True)
 class StrictChatRelayConfig(RelayConfig):
     strict_chat: bool = True
+    journal_protocol: ClassVar[str] = "deepseek-chat-strict"
+
+
+@dataclass(frozen=True)
+class DeepSeekResponsesRelayConfig(RelayConfig):
+    journal_protocol: str = "deepseek-responses-flash"
 
 
 DEFAULT_RELAY_CONFIG = RelayConfig()
@@ -88,14 +99,13 @@ def _strict_wire_evidence(response_id, finish, arguments):
 class ResponsesRelay:
     def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
                  config: RelayConfig = DEFAULT_RELAY_CONFIG, responses_policy=None):
-        if (config.strict_chat or config.model == "deepseek-flash"
+        if (config.formal_fixed or config.model == "deepseek-flash"
                 or budget.pricing.as_dict().get("provider") == "DeepSeek official"):
-            from benchmarks.v3_deepseek import (DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG,
-                                                 DEEPSEEK_STRICT_RELAY_CONFIG,
+            from benchmarks.v3_deepseek import (DEEPSEEK_FIXED_CONFIGS, DEEPSEEK_PRICING,
                                                  DEEPSEEK_UNLIMITED_PRICING, DeepSeekRoutingPolicy)
             if responses_policy is None:
                 admitted = (budget.pricing in (DEEPSEEK_PRICING, DEEPSEEK_UNLIMITED_PRICING)
-                            and config in (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG))
+                            and config in DEEPSEEK_FIXED_CONFIGS)
             else:
                 admitted = (type(responses_policy) is DeepSeekRoutingPolicy
                             and budget.pricing == DEEPSEEK_UNLIMITED_PRICING)
@@ -107,8 +117,8 @@ class ResponsesRelay:
                                               or budget.pricing != responses_policy.pricing):
             raise ValueError('native Responses policy requires its exact Auto bounds and pricing')
         self.endpoint = endpoint.rstrip("/")
-        if config.strict_chat and (self.endpoint != "https://api.deepseek.com" or responses_policy is not None):
-            raise ValueError("strict Chat Completions requires the pinned DeepSeek endpoint")
+        if config.formal_fixed and (self.endpoint != "https://api.deepseek.com" or responses_policy is not None):
+            raise ValueError("fixed DeepSeek protocol requires the pinned endpoint")
         self.upstream_route = "/beta/chat/completions" if config.strict_chat else "/responses"
         if config.strict_chat:
             self.protocol = "strict-chat"
@@ -289,7 +299,7 @@ class ResponsesRelay:
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= (1_000_000 if relay.config.strict_chat else MAX_REQUEST_BYTES):
+                    if not 0 < length <= (1_000_000 if relay.config.formal_fixed else MAX_REQUEST_BYTES):
                         self._json(413, {"error": {"message": "benchmark request exceeds its bound"}})
                         return
                     body = json.loads(self.rfile.read(length))
@@ -340,12 +350,14 @@ class ResponsesRelay:
                         except (ValueError, TypeError, KeyError, RecursionError):
                             self._json(400, {"error": {"message": "request exceeds the priced DeepSeek text policy"}})
                             return
+                if relay.config.formal_fixed and not relay.config.strict_chat:
+                    body["reasoning"] = {"effort": "high"}
                 token_field = "max_tokens" if relay.config.strict_chat else "max_output_tokens"
                 body[token_field] = relay.config.max_output_tokens
                 wants_stream = body.get("stream") is True
                 body["stream"] = wants_stream
                 encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-                if (policy is not None or relay.config.strict_chat) and len(encoded) + 512 > 1000000:
+                if (policy is not None or relay.config.formal_fixed) and len(encoded) + 512 > 1000000:
                     self._json(413, {"error": {"message": "native input exceeds its operational bound"}})
                     return
                 attempt_id = uuid.uuid4().hex
@@ -358,8 +370,8 @@ class ResponsesRelay:
                        "model": body['model'], "max_output_tokens": relay.config.max_output_tokens,
                        "reserved_rmb": str(quote),
                        "status": "unknown", "usage": None}
-                if relay.config.strict_chat:
-                    row["protocol"] = "deepseek-chat-strict"
+                if relay.config.formal_fixed:
+                    row["protocol"] = relay.config.journal_protocol
                 if actor_id is not None:
                     row['actor_id'] = actor_id
                 if policy is not None:
@@ -468,8 +480,8 @@ class ResponsesRelay:
                                 row["upstream_wire"] = _strict_wire_evidence(
                                     response_body["id"], choice["finish_reason"], arguments)
                         relay._settle_response(row, response_body)
-                        if relay.config.strict_chat and (row["status"] != "settled" or relay.provider_error):
-                            self._json(502, {"error": {"message": "strict Chat result could not be verified"}})
+                        if relay.config.formal_fixed and (row["status"] != "settled" or relay.provider_error):
+                            self._json(502, {"error": {"message": "fixed DeepSeek result could not be verified"}})
                         else:
                             self._json(200, response_body)
                         return
@@ -505,7 +517,7 @@ class ResponsesRelay:
                                 row["transport_error"] = "downstream_disconnect_drain_limit"
                                 break
                         frame.extend(chunk)
-                        outgoing = bytearray() if relay.config.strict_chat else chunk
+                        outgoing = bytearray() if relay.config.formal_fixed else chunk
                         while True:
                             normalized = bytes(frame).replace(b"\r\n", b"\n")
                             if b"\n\n" not in normalized:
@@ -566,9 +578,13 @@ class ResponsesRelay:
                                         with relay._upstream_lock:
                                             relay.provider_error = f"upstream_response_failed{suffix}"
                                     relay._settle_response(row, message.get('response', {}))
+                                    if relay.config.formal_fixed and row["status"] == "settled" and not relay.provider_error:
+                                        outgoing.extend(event + b"\n\n")
                                     upstream.close()
                                     terminal = True
                                     break
+                            if relay.config.formal_fixed and not relay.config.strict_chat:
+                                outgoing.extend(event + b"\n\n")
                         # Continuous chunks bypass the socket inactivity timeout. Preserve
                         # terminal usage already received in the current chunk.
                         if not terminal and now - started >= UPSTREAM_STREAM_SECONDS:
@@ -605,7 +621,7 @@ class ResponsesRelay:
                     if reserved and row["status"] == "unknown":
                         wire = row.get("upstream_wire")
                         relay.budget.settle(attempt_id, None, **({"wire_evidence": wire} if wire else {}))
-                        if (relay.responses_policy or relay.config.strict_chat) and relay.provider_error is None:
+                        if (relay.responses_policy or relay.config.formal_fixed) and relay.provider_error is None:
                             relay.provider_error = 'unknown_native_usage_or_price'
                     if "upstream" in locals():
                         upstream.close()

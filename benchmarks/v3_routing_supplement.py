@@ -504,7 +504,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
     from benchmarks.v3_fixtures import FIXTURES
     from benchmarks.v3_matched import BudgetLedger,summarize
     from benchmarks.v3_deepseek import (DEEPSEEK_PRICING,DEEPSEEK_RELAY_CONFIG,DEEPSEEK_ENDPOINT,
-                                        DEEPSEEK_STRICT_RELAY_CONFIG,DEEPSEEK_UNLIMITED_PRICING,DeepSeekRoutingPolicy)
+                                        DEEPSEEK_FIXED_CONFIGS,DEEPSEEK_UNLIMITED_PRICING,DeepSeekRoutingPolicy)
     from benchmarks.v3_deepseek import validate_planning_preflight
     from benchmarks.v3_responses_relay import ResponsesRelay
     if type(model_routing) is not bool or model_routing and provider_policy is None:
@@ -541,12 +541,11 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if os.read(output_lease,1):
             raise ValueError('supplement budget has a bound continuation; resume that child instead')
         core,config,original_attempts,core_hash=_core_checkpoint(core_output,core_budget)
-        fixed_relay_config = (DEEPSEEK_STRICT_RELAY_CONFIG
-                              if core.get('relay_config') == asdict(DEEPSEEK_STRICT_RELAY_CONFIG)
-                              else DEEPSEEK_RELAY_CONFIG)
+        fixed_relay_config = next((item for item in DEEPSEEK_FIXED_CONFIGS
+                                   if core.get('relay_config') == asdict(item)), DEEPSEEK_RELAY_CONFIG)
         if provider_policy is None:
             relay_config = fixed_relay_config
-        fixed_protocol = 'deepseek-chat-strict' if fixed_relay_config.strict_chat else None
+        fixed_protocol = fixed_relay_config.journal_protocol
         if origin_policy is None and any(call.get('protocol') != fixed_protocol
                                          for call in _attempt_calls(original_attempts)):
             raise ValueError('fixed-model origin includes a different provider protocol')
@@ -593,7 +592,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                 or ancestor.get('smoke_passed') is not True
                 or ancestor.get('relay_config')!=asdict(fixed_relay_config if deepseek_model_stage else relay_config)):
             raise ValueError('a complete same-candidate secure core campaign is required first')
-        if fixed_relay_config.strict_chat and origin_policy is None:
+        if fixed_relay_config.formal_fixed and origin_policy is None:
             if (ancestor.get('matched_status') != 'complete' or not summary['comparison_thresholds_met']
                     or not live._validate_rows_evidence(
                         ancestor_output, ancestor.get('delegation_controls', []), candidate, base_identity)

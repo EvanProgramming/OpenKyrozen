@@ -743,6 +743,105 @@ class DeepSeekBudgetTests(unittest.TestCase):
 
 
 class DeepSeekRelayTests(unittest.TestCase):
+    def test_formal_responses_smoke_pins_thinking_and_retains_continuation_and_ledger_provenance(self):
+        from benchmarks import v3_deepseek as deepseek
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        from unittest.mock import Mock, patch
+
+        bodies = []
+        reasoning = {"type": "reasoning", "id": "rs_1", "summary": [],
+                     "content": [{"type": "reasoning_text", "text": "echo once"}]}
+
+        def upstream(url, *, data, **_options):
+            self.assertEqual(url, deepseek.DEEPSEEK_ENDPOINT + "/responses")
+            body = json.loads(data)
+            bodies.append(body)
+            self.assertEqual(body["reasoning"], {"effort": "high"})
+            self.assertEqual(body["model"], "deepseek-flash")
+            self.assertEqual(body["max_output_tokens"], 4096)
+            tool, = body["tools"]
+            value, = tool["parameters"]["properties"]["value"]["enum"]
+            call = {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                    "name": "echo_probe", "arguments": json.dumps({"value": value})}
+            if len(bodies) == 1:
+                self.assertEqual(body["tool_choice"], {"type": "function", "name": "echo_probe"})
+                output = [reasoning, call]
+            else:
+                self.assertEqual(body["tool_choice"], "none")
+                self.assertEqual(body["input"][1:3], [reasoning, call])
+                reply = body["input"][3]
+                self.assertEqual(reply["call_id"], call["call_id"])
+                self.assertEqual(json.loads(reply["output"]), {"value": value})
+                output = [{"type": "message", "role": "assistant",
+                           "content": [{"type": "output_text", "text": value}]}]
+            return Mock(status_code=200, **{"json.return_value": {
+                "id": f"resp_{len(bodies)}", "model": "deepseek-flash",
+                "status": "completed", "output": output, "usage": {
+                    "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                    "input_tokens_details": {"cached_tokens": 2},
+                    "output_tokens_details": {"reasoning_tokens": 2},
+                },
+            }})
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = v3_matched.BudgetLedger(Path(directory) / "budget.sqlite", limit_rmb="15",
+                                            pricing=deepseek.DEEPSEEK_PRICING)
+            config = deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG
+            with self.assertRaises(ValueError):
+                ResponsesRelay(endpoint="https://wrong.invalid", api_key="offline", budget=ledger, config=config)
+            relay = ResponsesRelay(endpoint=deepseek.DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
+                                   config=config)
+            relay.start()
+            try:
+                with patch("benchmarks.v3_responses_relay.requests", post=upstream):
+                    self.assertTrue(deepseek.run_smoke(relay, "candidate"))
+                calls = ledger.campaign_calls()
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(set(relay.smoke_verified_attempt_ids), {call["attempt_id"] for call in calls})
+                for call in calls:
+                    self.assertEqual(call["protocol"], "deepseek-responses-flash")
+                    self.assertEqual(call["status"], "settled")
+                    self.assertEqual(call["reserved_rmb"], "2.032768")
+            finally:
+                relay.close()
+
+    def test_formal_responses_withholds_stream_terminal_until_usage_and_model_are_verified(self):
+        from benchmarks import v3_deepseek as deepseek
+        from benchmarks.v3_responses_relay import ResponsesRelay
+        from unittest.mock import Mock, patch
+
+        for served_model in ("deepseek-flash", "unknown"):
+            with self.subTest(served_model=served_model), tempfile.TemporaryDirectory() as directory:
+                ledger = v3_matched.BudgetLedger(Path(directory) / "budget.sqlite", limit_rmb="15",
+                                                pricing=deepseek.DEEPSEEK_PRICING)
+                relay = ResponsesRelay(endpoint=deepseek.DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
+                                       config=deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG)
+                relay.start()
+                try:
+                    first = b'data: {"type":"response.output_text.delta","delta":"test"}\r\n\r\n'
+                    payload = {"type": "response.completed", "response": {
+                        "id": "resp_test", "model": served_model, "status": "completed", "output": [],
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                                  "input_tokens_details": {"cached_tokens": 2}},
+                    }}
+                    final = b"data: " + json.dumps(payload).encode() + b"\r\n\r\n"
+                    response = Mock(status_code=200)
+                    response.iter_content.return_value = iter([first[:-1], first[-1:] + final[:10], final[10:]])
+                    with patch("benchmarks.v3_responses_relay.requests", post=Mock(return_value=response)):
+                        received = requests.post(relay.url + "/responses", json={"input": "x", "stream": True},
+                            headers={"Authorization": "Bearer " + relay.client_key}, timeout=3)
+                    self.assertIn("response.output_text.delta", received.text)
+                    call, = ledger.campaign_calls()
+                    if served_model == "deepseek-flash":
+                        self.assertIn("response.completed", received.text)
+                        self.assertEqual(call["status"], "settled")
+                    else:
+                        self.assertNotIn("response.completed", received.text)
+                        self.assertEqual(call["status"], "unknown")
+                        self.assertEqual(relay.provider_error, "unknown_native_usage_or_price")
+                finally:
+                    relay.close()
+
     def test_deepseek_budget_rejects_default_provider_or_undersized_reservation(self):
         from benchmarks.v3_deepseek import (DEEPSEEK_PRICING, DEEPSEEK_RELAY_CONFIG,
                                             DEEPSEEK_UNLIMITED_PRICING, DeepSeekRoutingPolicy)
@@ -924,6 +1023,15 @@ class DeepSeekRunnerTests(unittest.TestCase):
                 self.assertEqual(runner.call_args.kwargs['prior_hold_cny'], '2.042274')
                 self.assertEqual(runner.call_args.kwargs['limit_cny'], '15')
                 self.assertEqual(runner.call_args.kwargs['endpoint'], 'https://api.deepseek.com')
+                self.assertEqual(runner.call_args.kwargs['relay_config'], deepseek.DEEPSEEK_STRICT_RELAY_CONFIG)
+            with patch('sys.argv', argv + ['--responses']), \
+                    patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
+                    patch('scripts.publish_v3_preview._verify_candidate_signature'), \
+                    patch('benchmarks.v3_matched_live.run', return_value={'summary': summary}) as runner, \
+                    patch('builtins.print'):
+                with self.assertRaises(SystemExit):
+                    deepseek.main()
+                self.assertEqual(runner.call_args.kwargs['relay_config'], deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG)
             for status, code in (('planning_preflight_passed', 0), ('blocked_planning_preflight', 1)):
                 with patch('sys.argv', argv + ['--planning-preflight-only']), \
                         patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
@@ -1056,6 +1164,8 @@ class PlanningPreflightTests(unittest.TestCase):
                 row = {'attempt_id': prefix + str(number), 'arm': arm, 'fixture_id': 'candidate',
                     'repeat': -1, 'model': 'deepseek-flash', 'max_output_tokens': 4096,
                     'reserved_rmb': '2.032768'}
+                if relay.config.journal_protocol is not None:
+                    row['protocol'] = relay.config.journal_protocol
                 self.assertTrue(relay.budget.reserve(row['attempt_id'], input_token_bound=1_000_000,
                     output_token_bound=4096, metadata=row))
                 usage = {'input_tokens': 100, 'output_tokens': 10, 'cache_read_tokens': 0, 'cache_write_tokens': 0}
@@ -1320,6 +1430,38 @@ class PlanningPreflightTests(unittest.TestCase):
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM attempts WHERE id!='prior-campaign-reservations'").fetchone()[0], 6)
                 finally:
                     db.close()
+
+    def test_responses_requires_bug_fix_preflight_and_cannot_resume_as_strict_chat(self):
+        from benchmarks import v3_deepseek as deepseek
+        from benchmarks import v3_matched_live as live
+        from unittest.mock import patch
+
+        worker = self.native_worker()
+        with tempfile.TemporaryDirectory() as directory:
+            stack, options = self.runner(Path(directory), worker)
+            options["relay_config"] = deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG
+            execute = live._execute_cell
+            calls = []
+
+            def run_cell(**kwargs):
+                calls.append(kwargs["arm"])
+                if kwargs["arm"] == "planning_preflight":
+                    return execute(**kwargs)
+                self.assertEqual(kwargs["arm"], "bug_fix_preflight")
+                return {"verified_success": False}
+
+            with stack, patch.object(live, "_execute_cell", side_effect=run_cell):
+                report = live.run(**options)
+                self.assertEqual(calls, ["planning_preflight", "bug_fix_preflight"])
+                self.assertEqual(report["status"], "blocked_bug_fix_preflight")
+                self.assertEqual(report["rows"], [])
+                with patch.object(live, "_credential") as credential:
+                    with self.assertRaisesRegex(ValueError, "matching bug_fix-1 preflight"):
+                        live.run(**options)
+                    options["relay_config"] = deepseek.DEEPSEEK_STRICT_RELAY_CONFIG
+                    with self.assertRaisesRegex(ValueError, "different fixed-model protocol"):
+                        live.run(**options)
+                    credential.assert_not_called()
 
     def test_resume_rejects_preflight_lies_missing_evidence_or_extra_calls_before_key(self):
         from copy import deepcopy

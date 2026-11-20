@@ -1405,8 +1405,11 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
     worker_env = _worker_env(base, fixture, relay)
     if routing_variant is not None:
         worker_env['KYROZEN_DECISION_ASSIST_BACKEND']='off'
+    formal_fixed = getattr(getattr(relay, "config", None), "formal_fixed", False)
+
     def actor_provider_config(actor_id):
-        if getattr(relay, "protocol", None) in ("google", "strict-chat") or getattr(relay, "responses_policy", None) is not None:
+        if (formal_fixed or getattr(relay, "protocol", None) == "google"
+                or getattr(relay, "responses_policy", None) is not None):
             relay.root_actor_id_by_label.setdefault((arm,fixture_id,repeat),actor_id)
         return dict(relay.issue_actor_config(actor_id),
                     context_window_tokens=fixture['context_window_tokens'])
@@ -1496,7 +1499,7 @@ def _execute_cell(*, temporary_root, repeat, fixture, arm, arm_source, candidate
                     "worker_error": worker_error,
                     "worker_exit_code": code,
                     "worker_result_complete": worker_complete})
-        if getattr(relay, "protocol", None) == "strict-chat" and fixture["category"] == "subagents":
+        if formal_fixed and fixture["category"] == "subagents":
             row["delegation_exercised"] = any(call.get("actor_role") == "descendant" for call in calls)
             row["cost_cny"] = (str(sum(Decimal(call["actual_rmb"]) for call in calls))
                                if calls and all(call.get("status") == "settled" for call in calls) else None)
@@ -1634,10 +1637,10 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             limit = None if limit_cny == 'unlimited' else Decimal(limit_cny)
             prior_hold = Decimal(prior_hold_cny)
             if limit is None and provider_policy is None:
-                from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_RELAY_CONFIG,
-                                                     DEEPSEEK_STRICT_RELAY_CONFIG, DEEPSEEK_UNLIMITED_PRICING)
+                from benchmarks.v3_deepseek import (DEEPSEEK_ENDPOINT, DEEPSEEK_FIXED_CONFIGS,
+                                                     DEEPSEEK_UNLIMITED_PRICING)
                 if (endpoint != DEEPSEEK_ENDPOINT or pricing != DEEPSEEK_UNLIMITED_PRICING
-                        or relay_config not in (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG)
+                        or relay_config not in DEEPSEEK_FIXED_CONFIGS
                         or not prior_hold_records):
                     raise ValueError("unlimited fixed-model execution requires official DeepSeek and original accounting")
             if (not prior_hold.is_finite() or prior_hold < 0
@@ -1688,7 +1691,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                      call.get("model") == model and call.get("max_output_tokens") == max_output_tokens))
 
     def is_bug_fix_preflight_call(call: dict) -> bool:
-        return (relay_config.strict_chat and
+        return (relay_config.formal_fixed and
                 (call.get("arm"), call.get("fixture_id"), call.get("repeat")) ==
                 ("bug_fix_preflight", "bug_fix-1", -1) and
                 call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
@@ -1696,7 +1699,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     delegation_fixtures = {fixture["fixture_id"]: fixture for fixture in fixtures
                            if fixture["category"] == "subagents"}
     def is_delegation_call(call):
-        return (relay_config.strict_chat and call.get("arm") == "delegation-control" and
+        return (relay_config.formal_fixed and call.get("arm") == "delegation-control" and
                 call.get("fixture_id") in delegation_fixtures and call.get("repeat") in range(REPEATS)
                 and call.get("model") == model and call.get("max_output_tokens") == max_output_tokens)
 
@@ -1744,7 +1747,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     safety_stop = None
     journal_calls = budget.campaign_calls()
     if cny_accounting and provider_policy is None:
-        expected_protocol = "deepseek-chat-strict" if relay_config.strict_chat else None
+        expected_protocol = relay_config.journal_protocol
         if any(call.get("protocol") != expected_protocol for call in journal_calls):
             raise ValueError("budget-ledger call was made through a different fixed-model protocol")
     if checkpoint is not None:
@@ -1867,7 +1870,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                 _row_can_resume_as_complete(row, output, candidate, identity) and
                 row.get("verified_success") is True and row.get("workflow_state_correct") is True and
                 row.get("plan_scenario_passed") is True and row.get("protocol_recovery") == 0)
-    if relay_config.strict_chat and (bug_fix_preflight is not None or bug_calls or rows):
+    if relay_config.formal_fixed and (bug_fix_preflight is not None or bug_calls or rows):
         if not bug_fix_passed(bug_fix_preflight, bug_calls):
             raise ValueError("complete matching bug_fix-1 preflight evidence is required before formal evaluation")
     if provider_policy is not None:
@@ -1886,7 +1889,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
         relay = ResponsesRelay(endpoint=endpoint or credential_endpoint, api_key=api_key,
                                budget=budget, config=relay_config)
     relay.rows.extend(journal_calls)
-    if relay_config.strict_chat:
+    if relay_config.formal_fixed:
         relay.bug_fix_preflight_closed = bug_fix_preflight is not None
     if cny_accounting:
         relay.planning_preflight_label = ("planning_preflight", candidate, -1)
@@ -1940,7 +1943,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         calls=relay.rows, budget=budget_metadata(), held_reservations=_held_reservations(relay.rows))
                     _write_checkpoint(output, budget_path, pending)
             preflight_ok = not cny_accounting or planning_preflight is not None and planning_preflight.get("status") == "passed"
-            if relay_config.strict_chat and smoke_ok and preflight_ok and bug_fix_preflight is None:
+            if relay_config.formal_fixed and smoke_ok and preflight_ok and bug_fix_preflight is None:
                 bug_fixture = next(item for item in fixtures if item["fixture_id"] == "bug_fix-1")
                 try:
                     bug_fix_preflight = _execute_cell(
@@ -1975,7 +1978,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                             worker_script=worker_script, relay=relay, model=model, output=output,
                             api_key=api_key, budget=budget)
                         safety_stop = _safety_failure_status(row)
-                        if relay_config.strict_chat and arm == "v3" and not safety_stop and (
+                        if relay_config.formal_fixed and arm == "v3" and not safety_stop and (
                                 row["verified_success"] is not True or row["plan_scenario_passed"] is not True
                                 or row["protocol_recovery"] != 0
                                 or fixture["category"] == "long_context" and row["context_compaction_observed"] is not True
@@ -2018,7 +2021,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
                         break
                 if safety_stop or relay.budget_blocked or relay.provider_error:
                     break
-            if (relay_config.strict_chat and preflight_ok and not planning_preflight_only
+            if (relay_config.formal_fixed and preflight_ok and not planning_preflight_only
                     and not safety_stop and not relay.provider_error and not relay.budget_blocked
                     and summarize(rows, pricing=pricing)["comparison_thresholds_met"]):
                 for fixture_id, repeat in sorted((name, repeat) for name in delegation_fixtures
@@ -2042,7 +2045,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
             relay.close()
     evidence_complete = _validate_rows_evidence(output, rows, candidate, identity)
     summary = summarize(rows, pricing=pricing)
-    if relay_config.strict_chat:
+    if relay_config.formal_fixed:
         for row in (*controls, *(entry for entry in rows if entry["arm"] == "v3"
                                  and entry["fixture_id"] in delegation_fixtures)):
             if not row.get("usage_complete") or not row.get("safety_passed"):
