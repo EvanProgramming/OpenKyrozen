@@ -317,6 +317,11 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         return {**{key: value for key, value in criterion.items() if key != "args"},
                 "arguments": arguments}
 
+    test_command_guidance = (
+        "Leave the test command open until inspection identifies the runner. "
+        "Use the project test command, or python -m unittest for a standard-library unittest suite "
+        "without a configured runner. "
+    )
     marker = "## Pinned Working Plan state\n"
     previous = list(messages)
     messages[:] = [item for item in messages if not (
@@ -344,9 +349,7 @@ def _refresh_working_plan_context(self, messages: list) -> None:
                 '{"criterion":"Read the expected marker","verification":{"action":"read_file",'
                 '"arguments":{"path":"notes.txt"},"expect":{"contains":"ready"}}}. '
                 "Run the declared verification with matching arguments on the selected task. "
-                "Leave the test command open until inspection identifies the runner. "
-                "Use the project test command, or python -m unittest for a standard-library unittest suite "
-                "without a configured runner. "
+                f"{test_command_guidance}"
                 "Prose acceptance and unrelated tool results do not certify completion.\n"
             ) + json.dumps({"plan_id": None, "revision": 0, "tasks": []}, sort_keys=True)})
         update_projection = getattr(self, "_update_context_history_projection", None)
@@ -393,6 +396,7 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         "including read-only checks. Tool calls before start cannot verify pending tasks. "
         "Successful matching verification can complete the running task automatically. "
         "Check the current status before editing and define verification before starting each task. "
+        f"{test_command_guidance}"
     ) + "\n" + full})
     update_projection = getattr(self, "_update_context_history_projection", None)
     if callable(update_projection):

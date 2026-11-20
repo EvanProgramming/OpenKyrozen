@@ -151,6 +151,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         messages = []
         _refresh_working_plan_context(self.runtime, messages)
         self.assertIn("Start the next eligible task before running its verification", messages[0]["content"])
+        self.assertIn("python -m unittest", messages[0]["content"])
         self.start(plan)
         self.assertTrue(self.read(call_id="selected").success)
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
