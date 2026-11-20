@@ -764,7 +764,7 @@ class DeepSeekRelayTests(unittest.TestCase):
             call = {"type": "function_call", "id": "fc_1", "call_id": "call_1",
                     "name": "echo_probe", "arguments": json.dumps({"value": value})}
             if len(bodies) == 1:
-                self.assertEqual(body["tool_choice"], {"type": "function", "name": "echo_probe"})
+                self.assertEqual(body["tool_choice"], "auto")
                 output = [reasoning, call]
             else:
                 self.assertEqual(body["tool_choice"], "none")

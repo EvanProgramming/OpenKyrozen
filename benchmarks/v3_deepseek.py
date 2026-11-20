@@ -972,10 +972,8 @@ def run_smoke(relay, candidate: str) -> bool:
         return result if isinstance(result, dict) else None
 
     try:
-        choice = ({"type": "function", "name": "echo_probe"}
-                  if getattr(getattr(relay, "config", None), "formal_fixed", False) else "auto")
         first = request({"input": history, "tools": tools,
-                         "tool_choice": choice, "parallel_tool_calls": False, "stream": False})
+                         "tool_choice": "auto", "parallel_tool_calls": False, "stream": False})
         if first is None:
             return False
         output = first.get("output")
