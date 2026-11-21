@@ -226,6 +226,11 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         if ordinary_followup:
             phase_guidance += ("If the completed tasks covered only part of the original request, use update_plan "
                                "at revision 0 with no plan_id to create and start a fresh plan for the remaining work. ")
+            from openkyrozen.agent.engine import _followup_workspace_tools
+            followup_tools = _followup_workspace_tools(self)
+            if followup_tools:
+                phase_guidance += ("These tools can become available after starting a fresh plan: "
+                                   + ", ".join(followup_tools) + ". Existing permission and approval checks apply. ")
         if _native_tool_phase == "plan_active" and ordinary_plan_edit:
             phase_guidance += "Add discovered work within scope before the final verification. "
         if _native_tool_phase == "plan_active" and "discover_tools" in current_names:

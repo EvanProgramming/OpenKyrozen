@@ -14,6 +14,23 @@ _COMPACT_CORE_TOOLS = frozenset({
 _NATIVE_CONTROLS = frozenset({"propose_plan", "request_question"})
 
 
+_FOLLOWUP_WRITE_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
+_INSPECTION_TOOLS = frozenset({"list_dir", "find_files", "search_files", "read_file", "read_tool_artifact"})
+
+
+def _followup_workspace_tools(runtime):
+    permitted = runtime._permitted_tool_names()
+    allowed = runtime._effective_execution_capabilities()
+    registry = runtime.tool_registry
+    plan_tool = registry.get_spec("update_plan")
+    if ("update_plan" not in permitted or plan_tool is None
+            or plan_tool.source != "builtin" or plan_tool.capability not in allowed):
+        return []
+    return sorted(name for name in (_FOLLOWUP_WRITE_TOOLS | {"run_cmd"}) & permitted
+                  if (spec := registry.get_spec(name)) is not None
+                  and spec.source == "builtin" and spec.capability in allowed)
+
+
 class AgentEngine:
     """Own the foreground turn lifecycle and select native or legacy transport."""
 
@@ -103,7 +120,7 @@ class AgentEngine:
                 "metadata": archived_metadata,
             }, reply.is_error)
 
-    def _working_plan_continuation(self, turn, *, needs_plan=False):
+    def _working_plan_continuation(self, turn, *, needs_plan=False, followup_tool_groups=()):
         """Offer state once, without scheduling work or granting tool authority."""
         from openkyrozen.agent.completion import _missing_artifact_source_path
         from openkyrozen.agent.delegation import TERMINAL
@@ -157,6 +174,27 @@ class AgentEngine:
                         "eligible_tasks": [], "completion_evidence": "a plan and verified receipts are required",
                         "decisions": ["create a Working Plan with update_plan and runtime-owned IDs",
                                       "explicitly start a task before its work; never fabricate completion"]}
+            if followup_tool_groups:
+                followup_tools = _followup_workspace_tools(runtime)
+                actions = {record.get("action") for record in turn.tool_records}
+                if (plan is None or plan.status != "completed" or interaction.get("executing_plan")
+                        or any(group.isdisjoint(followup_tools) for group in followup_tool_groups)
+                        or not actions & _INSPECTION_TOOLS or actions - _INSPECTION_TOOLS - {"update_plan"}
+                        or manager.store.get_working_plan(**scope) is not None):
+                    return None
+                tasks = manager.store.list_working_plan_tasks(
+                    plan.id, **scope, current_completed_revision=plan.revision)
+                if (not tasks or tuple(task["id"] for task in tasks) != plan.task_ids
+                        or any((task.get("checkpoint") or {}).get("strategic_plan")
+                               or _unknown_recovery_effect(task) or task["status"] != "succeeded"
+                               or not manager._task_has_evidence(task) for task in tasks)):
+                    return None
+                return {"plan_id": plan.id, "revision": plan.revision, "status": "completed",
+                        "followup_tools": followup_tools,
+                        "decisions": ["Use update_plan at revision zero with no plan_id to add and start "
+                                      "a fresh task for the remaining user-requested work.",
+                                      "The listed tools can become available for a selected task. "
+                                      "Workspace, capability, and approval checks still apply."]}
             if plan is None or plan.status != "active":
                 return None
             saved = manager.store.get_working_plan_by_id(plan.id, **scope)
@@ -431,13 +469,33 @@ class AgentEngine:
                     break
                 if (response.finish_reason == FinishReason.FINAL and not final_text.startswith("[LLM Error]")
                         and not plan_continuation_used and not pending_plan_validation and step < max_steps):
-                    state = self._working_plan_continuation(turn, needs_plan=needs_plan and not completed_plan)
+                    followup_tool_groups = []
+                    if native_tool_phase == "plan_completed" and step + 2 < max_steps:
+                        answer = final_text.casefold().replace("’", "'").replace("`", "")
+                        opening = " ".join(answer.split("\n\n", 1)[0].split())
+                        refusals = ("i can't complete", "i cannot complete", "i'm unable to complete")
+                        first_person = opening.startswith(refusals) or (
+                            opening.startswith("i ") and any(f"but {phrase}" in opening for phrase in refusals))
+                        lists_current_tools = (
+                            ("only update_plan" in opening
+                             or ("only read_tool_artifact" in opening and "update_plan" in opening))
+                            and ("exposed" in opening or "available" in opening)
+                        )
+                        if first_person and lists_current_tools:
+                            if any(phrase in answer for phrase in ("no write tool", "no edit tool")):
+                                followup_tool_groups.append(_FOLLOWUP_WRITE_TOOLS)
+                            if any(phrase in answer for phrase in (
+                                    "no shell", "no command runner", "no command-execution tool")):
+                                followup_tool_groups.append({"run_cmd"})
+                    state = self._working_plan_continuation(
+                        turn, needs_plan=needs_plan and not completed_plan, followup_tool_groups=followup_tool_groups)
                     if state is not None:
                         plan_continuation_used = True
                         if runtime._conversation_turn_id.get() is not None:
                             runtime._record_conversation_entry("plan.continuation", {
                                 "plan_id": state["plan_id"], "revision": state["revision"],
-                                "reason": "plan_required" if state["status"] == "required" else "required_work_remains",
+                                "reason": {"required": "plan_required", "completed": "followup_tool_gate"}.get(
+                                    state["status"], "required_work_remains"),
                             }, request_id=runtime._last_model_request_id.get())
                         messages.extend((response if response.continuation else {
                             "role": "assistant", "content": response.text,

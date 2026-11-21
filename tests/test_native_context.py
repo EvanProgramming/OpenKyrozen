@@ -1034,6 +1034,87 @@ class NativeContextTests(unittest.TestCase):
         processes._audit_event("started", "unknown-owned-process", owned_process_state="unknown")
         self.assertIsNone(engine._working_plan_continuation(turn))
 
+    def test_completed_inspection_corrects_temporary_write_tool_refusal_only_when_permitted(self):
+        cases = (
+            ("edit proceeds", {"write_file"}, "write", 9, False, False, 7),
+            ("write denied", set(), "write", 9, False, False, 3),
+            ("only shell allowed", {"run_cmd"}, "write", 9, False, False, 3),
+            ("only write allowed", {"write_file"}, "shell", 9, False, False, 3),
+            ("retry once", {"write_file"}, "write", 9, True, False, 4),
+            ("insufficient steps", {"write_file"}, "write", 3, False, False, 3),
+            ("final answer mode", {"write_file"}, "write", 9, False, True, 4),
+            ("quoted blocker", {"write_file"}, "write", 9, False, False, 3),
+            ("external approval", {"write_file"}, "write", 9, False, False, 3),
+            ("surface denies shell", {"run_cmd"}, "shell", 9, False, False, 3),
+        )
+        for label, followup_tools, missing, max_steps, repeat_refusal, final_only, expected in cases:
+            with self.subTest(label=label):
+                self.runtime.tasks.clear()
+                path = self.root / "notes.txt"
+                path.write_text("ready\n")
+                self.runtime.execution_context.max_steps = max_steps
+                permitted = {"update_plan", "read_file", "read_tool_artifact"} | followup_tools
+                refusal_text = (f"I can't complete the work. Only update_plan and read_tool_artifact "
+                    f"are exposed. There is no {missing} tool. Enable the {missing} tool to continue.")
+                if label == "quoted blocker":
+                    refusal_text = f'The inspection is complete. The note says "{refusal_text}"'
+                if label == "external approval":
+                    refusal_text = ("I can't complete the rollout without production approval. Use update_plan "
+                                    "to record the handoff. No write tool should be used until approval is granted.")
+                refusal = ModelResponse(text=refusal_text, finish_reason=FinishReason.FINAL)
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        call = ToolCall("inspect", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_read_check", "ref": "observe", "path": "notes.txt"},
+                            {"op": "start", "task": "observe"},
+                        ]})
+                    elif step == 2:
+                        call = ToolCall("read", "read_file", {"path": "notes.txt"})
+                    elif step == 3:
+                        _, tools = self.availability(messages)
+                        self.assertNotIn("write_file", tools["current_call_tools"])
+                        return (ModelResponse(text="", finish_reason=FinishReason.FINAL) if final_only else refusal)
+                    elif step == 4:
+                        if final_only:
+                            self.assertFalse(self.availability(messages)[1]["current_call_tools"])
+                            return refusal
+                        state = json.loads(messages[-1]["content"])["working_plan_continuation"]
+                        self.assertEqual(state["status"], "completed")
+                        self.assertEqual(state["followup_tools"], ["write_file"])
+                        if repeat_refusal:
+                            return refusal
+                        call = ToolCall("new-plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add", "ref": "edit", "task": {"description": "Update notes", "acceptance": [
+                                {"criterion": "Notes changed", "verification": {"action": "read_file",
+                                    "arguments": {"path": "notes.txt"}, "expect": {"equals": "updated\n"}}}
+                            ]}},
+                            {"op": "start", "task": "edit"},
+                        ]})
+                    elif step == 5:
+                        call = ToolCall("write", "write_file", {"path": "notes.txt", "content": "updated\n"})
+                    elif step == 6:
+                        call = ToolCall("verify", "read_file", {"path": "notes.txt"})
+                    else:
+                        return ModelResponse(text="Updated and verified.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                provider = self.provider(respond)
+                with ExitStack() as stack:
+                    if label == "surface denies shell":
+                        stack.enter_context(patch.object(self.runtime, "_effective_execution_capabilities",
+                                                        return_value={"read", "write"}))
+                    answer, _, _ = self.run_native(provider,
+                        [{"role": "user", "content": "Inspect notes.txt and replace the contents with updated."}],
+                        complexity="complex", permitted=permitted)
+                self.assertEqual(len(provider.requests), expected, answer)
+                if "write_file" in followup_tools:
+                    self.assertIn("available after starting a fresh plan: write_file",
+                                  self.availability(provider.requests[2])[0])
+                self.assertEqual(path.read_text(), "updated\n" if label == "edit proceeds" else "ready\n")
+
     def test_native_completed_plan_requests_final_text_once_without_granting_tools(self):
         for fallback in ("answer", "empty", "tool", "completed-tool"):
             with self.subTest(fallback=fallback):
