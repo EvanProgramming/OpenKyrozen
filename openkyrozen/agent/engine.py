@@ -568,6 +568,8 @@ class AgentEngine:
                       if selected_task_id and call.name not in _NATIVE_CONTROLS | {"update_plan"} else None}
                      for call in response.tool_calls]
             turn.tool_calls.extend(calls)
+            if native_tool_phase == "plan_active" and len(calls) == 1 and calls[0]["action"] == "update_plan":
+                calls = [{**calls[0], "native_plan_start": plan}]
 
             def record_native_call(call, receipt):
                 record = runtime._record_turn_receipt(receipt, allow_legacy_task_matching=False)

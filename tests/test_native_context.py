@@ -324,6 +324,48 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded" if accepted else "running")
                 self.assertEqual(turn.runtime_status, "completed" if accepted else "incomplete")
 
+    def test_native_plan_start_can_bind_an_omitted_plan_id_from_the_exact_task_and_revision(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        self.runtime.execution_context.max_steps = 7
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            if step == 1:
+                call = ToolCall("create", "update_plan", {"expected_revision": 0, "operations": [
+                    {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"}]})
+            elif step in (2, 3, 4):
+                plan = self.runtime.tasks.working_plan
+                if step == 3:
+                    reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "start-2")
+                    self.assertTrue(reply.is_error)
+                if step == 4:
+                    reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "start-3")
+                    self.assertTrue(reply.is_error)
+                self.assertIsNone(self.runtime.tasks.execution_task_id)
+                arguments = {"expected_revision": plan.revision + (step == 2), "operations": [
+                    {"op": "start", "task": "foreign-task" if step == 3 else plan.task_ids[0]}]}
+                call = ToolCall(f"start-{step}", "update_plan", arguments)
+            elif step == 5:
+                reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "start-4")
+                self.assertFalse(reply.is_error, reply.output)
+                prior = next(item for item in messages if isinstance(item, ModelResponse)
+                             and any(call.id == "start-4" for call in item.tool_calls))
+                self.assertNotIn("plan_id", prior.tool_calls[0].arguments)
+                call = ToolCall("read", "read_file", {"path": "notes.txt"})
+            else:
+                return ModelResponse(text="The file contains ready.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        provider = self.provider(respond)
+        answer, turn, _ = self.run_native(
+            provider, [{"role": "user", "content": "Read notes.txt and report its contents."}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertIn("The file contains ready.", answer)
+        self.assertFalse(turn.protocol_error_message)
+        self.assertEqual(len(provider.requests), 6)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
+
     def test_real_plan_gate_expansion_read_and_completed_confirmation_have_current_guidance(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for streaming in (False, True):

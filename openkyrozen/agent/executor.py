@@ -680,7 +680,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
 def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                          successful_operations: set[str], call_id: str | None = None,
                          call_id_source: str = "synthetic", task_id: str | None = None,
-                         task_plan_id: str | None = None) -> ExecutionReceipt:
+                         task_plan_id: str | None = None, native_plan_start=None) -> ExecutionReceipt:
     """Execute one model action, refusing a duplicate successful mutation."""
     task_id = (task_id or getattr(getattr(self, "current_session", None), "_delegation_task_id", None)
                if action != "update_plan" else None)
@@ -688,6 +688,25 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     started_at = utc_now()
     call_id = call_id or f"synthetic_{uuid.uuid4().hex}"
     expected_spec = self.tool_registry.specs.get(canonical)
+    if (native_plan_start is not None and native_plan_start is self.tasks.working_plan
+            and call_id_source == "native" and canonical == "update_plan" and expected_spec is not None
+            and expected_spec.source == "builtin" and isinstance(args, dict)
+            and set(args) == {"expected_revision", "operations"} and type(args["expected_revision"]) is int
+            and args["expected_revision"] == native_plan_start.revision
+            and isinstance(operations := args["operations"], list) and len(operations) == 1
+            and isinstance(operation := operations[0], dict) and set(operation) == {"op", "task"}
+            and operation["op"] == "start" and operation["task"] in native_plan_start.task_ids):
+        from openkyrozen.agent.plan_tools import _update_plan
+
+        executor = expected_spec.executor
+        interaction = self._interaction_controller.state()
+        # The exact task and revision identify the ordinary plan even when the provider omits its ID.
+        if (type(executor) is MethodType and executor.__self__ is self
+                and executor.__func__ is _update_plan.__tool_result_executor__
+                and not interaction.get("executing_plan") and not interaction.get("pending_plan")
+                and not any((task.get("checkpoint") or {}).get("strategic_plan")
+                            for task in self.tasks.tasks if task["id"] in native_plan_start.task_ids)):
+            args = {**args, "plan_id": native_plan_start.id}
     if call_id_source == "native" and canonical == "discover_tools" and expected_spec is not None:
         from openkyrozen.agent.prompts import _discover_tools
         executor = expected_spec.executor
@@ -882,7 +901,7 @@ def _execute_tool_batch(self, calls: list[dict[str, Any]], *, operation_scope: s
             call.get("action", ""), call.get("args", ""), operation_scope=operation_scope,
             successful_operations=successful_operations, call_id=call.get("call_id"),
             call_id_source=call.get("call_id_source", call_id_source), task_id=call.get("task_id"),
-            task_plan_id=call.get("task_plan_id"),
+            task_plan_id=call.get("task_plan_id"), native_plan_start=call.get("native_plan_start"),
         )
 
     index = 0
