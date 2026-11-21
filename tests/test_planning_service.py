@@ -9,6 +9,24 @@ from pathlib import Path
 
 
 class PlanningServiceOwnershipTests(unittest.TestCase):
+
+    def test_full_read_criterion_requires_an_exact_working_plan_path(self):
+        from openkyrozen.tasks.planning import InteractionError, validate_acceptance_verification
+
+        observation = {"action": "read_file", "arguments": {"path": "note.txt"}, "expect": {"complete": True}}
+        self.assertEqual(validate_acceptance_verification(observation, allow_complete_read=True), observation)
+        with self.assertRaises(InteractionError):
+            validate_acceptance_verification(observation)
+        for override in (
+            {"expect": {"complete": False}},
+            {"expect": {"complete": 1}},
+            {"expect": {"complete": True, "contains": "expected"}},
+            {"arguments": {"path": "note.txt", "start_line": 2}},
+            {"arguments": {"path": ""}},
+        ):
+            with self.subTest(override=override), self.assertRaises(InteractionError):
+                validate_acceptance_verification({**observation, **override}, allow_complete_read=True)
+
     def test_tasks_service_owns_strategic_lifecycle_without_loading_agent(self):
         code = '''
             import importlib.abc

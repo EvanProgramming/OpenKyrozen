@@ -28,7 +28,7 @@ def _text(value: Any, field: str, limit: int) -> str:
     return value
 
 
-def validate_acceptance_verification(verification):
+def validate_acceptance_verification(verification, *, allow_complete_read=False):
     """Shared exact verification contract for approved and ordinary plan criteria."""
     if (not isinstance(verification, dict)
             or set(verification) not in ({"action", "arguments"}, {"action", "arguments", "expect"})
@@ -37,7 +37,12 @@ def validate_acceptance_verification(verification):
         raise InteractionError("acceptance verification must contain an action and object arguments")
     if verification["action"] == "read_file":
         expect = verification.get("expect")
-        if (not isinstance(expect, dict) or len(expect) != 1
+        if (allow_complete_read and isinstance(expect, dict) and set(expect) == {"complete"}
+                and expect["complete"] is True):
+            arguments = verification["arguments"]
+            if set(arguments) != {"path"} or not isinstance(arguments["path"], str) or not arguments["path"].strip():
+                raise InteractionError("complete read verification requires exactly one nonempty path")
+        elif (not isinstance(expect, dict) or len(expect) != 1
                 or set(expect) not in ({"equals"}, {"contains"})
                 or not isinstance(next(iter(expect.values())), str)
                 or ("contains" in expect and not expect["contains"])):

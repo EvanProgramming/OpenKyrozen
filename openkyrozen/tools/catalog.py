@@ -146,7 +146,15 @@ _CONTROL_VERIFICATION = {'type':'object','properties':{
 _READ_CRITERION = {'type':'object','properties':{
     'criterion':{'type':'string','minLength':1},
     'verification':{**_CONTROL_VERIFICATION,'properties':{
-        **_CONTROL_VERIFICATION['properties'],'action':{'type':'string','enum':['read_file']}},
+        **_CONTROL_VERIFICATION['properties'],'action':{'type':'string','enum':['read_file']},
+        'expect':{'anyOf':[
+            {'type':'object','properties':{name: predicate},'required':[name],'additionalProperties':False}
+            for name, predicate in {
+                **_CONTROL_VERIFICATION['properties']['expect']['properties'],
+                'complete':{'type':'boolean','enum':[True],
+                            'description':'For ordinary Working Plans, verify a complete read of one exact path.'},
+            }.items()
+        ]}},
         'required':['action','arguments','expect']},
 },'required':['criterion','verification'],'additionalProperties':False}
 _ACTION_CRITERION = {**_READ_CRITERION, 'properties':{

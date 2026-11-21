@@ -219,7 +219,7 @@ class TaskManager:
         return True
 
     @staticmethod
-    def _plan_task_fields(task: Any) -> dict[str, Any]:
+    def _plan_task_fields(task: Any, *, allow_complete_read: bool = False) -> dict[str, Any]:
         if not isinstance(task, dict):
             raise ValueError("task must be an object")
         allowed = {"description", "acceptance", "dependencies", "priority", "execution"}
@@ -240,7 +240,8 @@ class TaskManager:
                 if (not isinstance(value, dict) or set(value) != {"criterion", "verification"}
                         or not isinstance(value.get("criterion"), str) or not value["criterion"].strip()):
                     raise ValueError("verified criteria require criterion/verification objects; do not mix with prose")
-                verification = validate_acceptance_verification(value["verification"])
+                verification = validate_acceptance_verification(
+                    value["verification"], allow_complete_read=allow_complete_read)
                 action = verification["action"]
                 prefixes = {"read_file": "read-ac-", "run_cmd": "command-ac-", "git_show": "git-ac-"}
                 if action not in prefixes:
@@ -399,6 +400,7 @@ class TaskManager:
             transaction_event and transaction_event.get("event_type") == "interaction.plan_accepted"
             and transaction_event.get("expected_proposal")
         )
+        allow_complete_read = not (has_strategic_tasks or is_strategic_acceptance or strategic_bindings)
         references: dict[str, str] = {}
         completion_requests: list[str] = []
         used_strategic_bindings: set[str] = set()
@@ -448,7 +450,7 @@ class TaskManager:
                 raise ValueError("Strategic Plan tasks cannot be superseded without approval")
             if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
                 raise ValueError("task references must be unique nonempty strings")
-            fields = self._plan_task_fields(task_data)
+            fields = self._plan_task_fields(task_data, allow_complete_read=allow_complete_read)
             sources = [by_id[item] for item in source_ids]
             if any(item["status"] not in {"pending", "failed", "blocked"}
                    and not (item["status"] == "cancelled" and (item.get("checkpoint") or {}).get("superseded_by"))
@@ -525,7 +527,7 @@ class TaskManager:
                 ref = operation["ref"]
                 if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
                     raise ValueError("task references must be unique nonempty strings")
-                fields = self._plan_task_fields(operation["task"])
+                fields = self._plan_task_fields(operation["task"], allow_complete_read=allow_complete_read)
                 if has_strategic_tasks and (not is_strategic_acceptance or not strategic_bindings or ref not in strategic_bindings):
                     raise ValueError("new work in a Strategic Plan requires an approved strategic binding")
                 task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
@@ -608,7 +610,7 @@ class TaskManager:
                     "description": fields.get("description", current["description"]),
                     "acceptance": fields.get("acceptance", []),
                     **{key: fields[key] for key in ("dependencies", "priority", "execution") if key in fields},
-                })
+                }, allow_complete_read=allow_complete_read)
                 normalized = {key: validated[key] for key in fields if key != "execution"}
                 if "execution" in fields:
                     checkpoint = current.get("checkpoint", {})
@@ -1145,10 +1147,14 @@ class TaskManager:
                         if not isinstance(expect, dict) or len(expect) != 1:
                             continue
                         operator, expected = next(iter(expect.items()))
-                        content = str(verification_result if verification_result is not None else result)
-                        if (operator == "equals" and content != expected) or (
-                                operator == "contains" and expected not in content):
-                            continue
+                        if operator == "complete":
+                            if expected is not True or criterion["id"] not in equivalent_read_ids:
+                                continue
+                        else:
+                            content = str(verification_result if verification_result is not None else result)
+                            if (operator == "equals" and content != expected) or (
+                                    operator == "contains" and expected not in content):
+                                continue
                     verified_ids.append(criterion["id"])
                 if verified_ids:
                     item["acceptance_ids"] = verified_ids

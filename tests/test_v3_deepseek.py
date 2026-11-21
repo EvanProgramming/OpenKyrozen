@@ -260,13 +260,17 @@ class DeepSeekStrictChatTests(unittest.TestCase):
 
     def test_valid_json_reaches_canonical_validation_and_respects_object_cardinality(self):
         from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
-        from openkyrozen.tools.catalog import _SCHEMAS
+        from openkyrozen.tools.catalog import _READ_CRITERION, _SCHEMAS
         from openkyrozen.tools.manifest import ToolRegistry
         expect = {"equals": {"type": "string"}, "contains": {"type": "string"}}
         predicate = {"type": "object", "properties": expect, "required": [],
                      "minProperties": 1, "maxProperties": 1, "additionalProperties": False}
         variants = strict_chat_schema(predicate)["properties"]["arguments"]["anyOf"]
         self.assertEqual([item["required"] for item in variants], [["equals"], ["contains"]])
+
+        read_expect = _READ_CRITERION["properties"]["verification"]["properties"]["expect"]
+        working_variants = strict_chat_schema(read_expect)["properties"]["arguments"]["anyOf"]
+        self.assertCountEqual([item["required"] for item in working_variants], [["equals"], ["contains"], ["complete"]])
 
         invalid = {"complexity": "simple", "tasks": [{"description": "Read source",
             "acceptance": [{"criterion": "read it", "verification": {"action": "read_file",

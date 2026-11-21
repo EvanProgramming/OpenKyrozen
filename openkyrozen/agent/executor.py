@@ -973,7 +973,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
             if (local_scope and explicit_task_id and receipt.authorized and receipt.call_id_source == "native"
                     and receipt.tool_source == "builtin" and verification.get("method") == "read_only_tool"
                     and isinstance(observed, dict) and observed.get("complete_file") is True
-                    and isinstance(path, str) and len(arguments) > 1
+                    and isinstance(path, str)
                     and arguments.keys() <= {"path", "start_line", "max_lines", "max_chars"}):
                 whole_read_args = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
         else:

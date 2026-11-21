@@ -348,6 +348,18 @@ class StrategicPlanAcceptanceTests(unittest.TestCase):
         binding = next(task for task in result["tasks"] if task["id"] == task_id)["checkpoint"]["strategic_plan"]
         self.assertEqual(binding["fingerprint"], accepted["fingerprint"])
 
+    def test_complete_read_criterion_is_unavailable_to_strategic_children(self):
+        plan = self._proposal()
+        accepted, _ = self.controller.accept_plan(self.manager, plan_id=plan["plan_id"], version=1)
+        with self.assertRaisesRegex(ValueError, "read_file verification requires"):
+            self.manager.edit_plan(plan_id=self.manager.working_plan.id, expected_revision=1,
+                operations=[{"op": "add", "anchor": accepted["working_task_ids"][0], "ref": "observe", "task": {
+                    "description": "Observe page input", "acceptance": [{
+                        "criterion": "Read the page", "verification": {"action": "read_file",
+                            "arguments": {"path": "page.txt"}, "expect": {"complete": True}}}],
+                }}])
+        self.assertEqual(self.manager.working_plan.revision, 1)
+
     def test_strategic_split_retains_approved_anchor_and_adds_bound_strategy(self):
         from copy import deepcopy
         plan = self._proposal()

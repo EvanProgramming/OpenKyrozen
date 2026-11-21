@@ -280,6 +280,53 @@ class NativeContextTests(unittest.TestCase):
             self.runtime._get_model_response(messages, "context-fixture", tool_names=set())
         self.assertEqual(len(provider.requests), 2)
 
+    def test_native_plan_can_verify_an_exact_full_read_before_content_is_known(self):
+        (self.root / "notes.txt").write_text("timeout = 15\nretries = 2\n", encoding="utf-8")
+        (self.root / "other.txt").write_text("timeout = 20\nretries = 3\n", encoding="utf-8")
+        for arguments, accepted in (
+            ({"path": "notes.txt"}, True),
+            ({"path": "notes.txt", "start_line": 1, "max_lines": 2}, True),
+            ({"path": "notes.txt", "start_line": 2}, False),
+            ({"path": "notes.txt", "max_chars": 8}, False),
+            ({"path": "other.txt"}, False),
+        ):
+            with self.subTest(arguments=arguments):
+                self.runtime.tasks.clear()
+                self.runtime.execution_context.max_steps = 3
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        pinned = next(message["content"] for message in messages if isinstance(message, dict)
+                                      and message.get("content", "").startswith("## Pinned Working Plan state\n"))
+                        self.assertIn('"expect":{"complete":true}', pinned)
+                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add", "ref": "inspect", "task": {"description": "Read the defaults",
+                                "acceptance": [{"criterion": "Read the complete defaults file", "verification": {
+                                    "action": "read_file", "arguments": {"path": "notes.txt"},
+                                    "expect": {"complete": True}}}]}},
+                            {"op": "start", "task": "inspect"}]})
+                    elif step == 2:
+                        reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "plan")
+                        self.assertFalse(reply.is_error, reply.output)
+                        call = ToolCall("read", "read_file", arguments)
+                    else:
+                        return ModelResponse(text='{"timeout":15,"retries":2}', finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                def stream(provider, messages, model):
+                    yield ResponseComplete(respond(provider, messages, model))
+
+                provider = self.provider(stream, stream=True)
+                answer, turn, _ = self.run_native(
+                    provider, [{"role": "system", "content": "Inspect the requested defaults."},
+                               {"role": "user", "content": "Read and report the defaults"}],
+                    complexity="complex", permitted=self.runtime._permitted_tool_names())
+                self.assertEqual(len(provider.requests), 3 if accepted else 4, answer)
+                self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded" if accepted else "running")
+                self.assertEqual(turn.runtime_status, "completed" if accepted else "incomplete")
+
     def test_real_plan_gate_expansion_read_and_completed_confirmation_have_current_guidance(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for streaming in (False, True):

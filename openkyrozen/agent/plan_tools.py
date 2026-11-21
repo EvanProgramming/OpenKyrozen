@@ -71,8 +71,10 @@ def _update_plan(self, arguments: dict):
     Use returned plan_id/revision for edits and add.ref for same-batch references.
     Read acceptance can use criterion/verification objects: verification names
     read_file, exact arguments and expect={equals:content} or {contains:text}.
-    All predicates must match actual complete content after explicit start;
-    prose acceptance never becomes verified merely because a read succeeded.
+    In ordinary plans, use expect={complete:true} with the exact path to observe
+    unknown contents. This criterion requires a complete native file read after
+    explicit start. Use equals or contains for expected contents. Prose
+    acceptance needs its own verification evidence.
     For a test task, add a criterion/verification object with action run_cmd and
     the exact arguments you will run, including any options. Start the task
     before running that command. A verified zero exit status satisfies this

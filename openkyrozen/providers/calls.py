@@ -153,7 +153,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "Create the required Working Plan at revision zero. Use add operations with a unique ref "
                     "and a task with a description and acceptance criteria. In the same call, use start "
                     "with the first task's ref as its task value. Include all requested work, including pending "
-                    "edits and tests. Include typed verification when the exact arguments and result are known."
+                    "edits and tests. For unknown file contents, use complete-read verification of the exact path. "
+                    "Use a content predicate when the expected result is known."
                 )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
                 required = ["plan_id", "expected_revision", "operations"]
