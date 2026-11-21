@@ -1,7 +1,9 @@
+from contextlib import ExitStack, closing
 import hashlib
 import json
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from openkyrozen.tools.models import ToolResult
@@ -28,8 +30,8 @@ class TaskConsistencyTests(unittest.TestCase):
         )
 
     def test_recovery_keeps_unfinished_standalone_tasks_with_ordered_plan(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="mixed", session_id="recover")
             standalone = manager.add_task("Standalone retry")
             standalone_id = manager.tasks[standalone]["id"]
@@ -45,8 +47,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual(len(recovered.tasks), 3)
 
     def test_long_receipt_arguments_match_complete_checkpoint(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="long", session_id="args")
             args = "result.txt|" + "x" * 1100
             index = manager.add_task(
@@ -65,8 +67,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual(manager.tasks[index]["status"], "succeeded")
 
     def test_long_receipt_fingerprint_matches_inferred_acceptance(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="long-inferred", session_id="args")
             args = "result.txt|" + "x" * 1100
             index = manager.add_task("Write long result", acceptance=[
@@ -81,8 +83,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertNotIn("unmatched_reason", evidence)
 
     def test_failed_inferred_long_receipt_can_match_successful_retry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="long-retry", session_id="args")
             args = "result.txt|" + "x" * 1100
             full_hash = hashlib.sha256(args.encode()).hexdigest()
@@ -106,8 +108,10 @@ class TaskConsistencyTests(unittest.TestCase):
     def setUp(self):
         self._original_interaction = main._interaction_controller
         self._interaction_directory = tempfile.TemporaryDirectory()
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
         controller = InteractionController(
-            MemoryBank(Path(self._interaction_directory.name) / "interaction.sqlite3").store,
+            self._sqlite_owners.enter_context(closing(MemoryBank(Path(self._interaction_directory.name) / "interaction.sqlite3"))).store,
             workspace_id="legacy-tests", session_id="legacy-tests",
         )
         controller.set_mode("agent")
@@ -115,11 +119,12 @@ class TaskConsistencyTests(unittest.TestCase):
 
     def tearDown(self):
         main._interaction_controller = self._original_interaction
+        self._sqlite_owners.close()
         self._interaction_directory.cleanup()
 
     def test_explicit_task_ids_win_over_description_deduplication(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="turn")
             block = (
                 'TaskList:\n```json\n'
@@ -186,8 +191,8 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertEqual(" ".join(clean.split()), expected)
         self.assertNotRegex(clean, r"Action:|</?\s*(?:invoke|parameter|calls)\b")
 
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="protocol")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="protocol")))
             original_memory, original_learning = main.memory_bank, main.learning_engine
             main.memory_bank = memory
             main.learning_engine = LearningEngine(memory)
@@ -205,8 +210,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertNotRegex(memory.get_recent(1)[0], r"Action:|</?\s*(?:invoke|parameter|calls)\b")
 
     def test_progress_counts_done_and_succeeded_consistently(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="progress")
             manager.add_task("legacy complete")
             manager.add_task("durable complete")
@@ -236,9 +241,9 @@ class TaskConsistencyTests(unittest.TestCase):
             def artifact_context(self, _run):
                 return "", []
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
-            store = MemoryBank(root / "state.sqlite3").store
+            store = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="blocked-test")
             index = manager.add_task("reconcile the four actions")
             manager.set_status(index, "blocked")
@@ -301,13 +306,13 @@ class TaskConsistencyTests(unittest.TestCase):
             'Action: {"action":"write_file","args":"two.txt|two"}',
             "Both files were written successfully.",
         ]
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
             original_learning = main.learning_engine
             main._set_workspace_root(root)
-            main.tasks = TaskManager(MemoryBank(root / "state.sqlite3").store,
+            main.tasks = TaskManager(sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store,
                                      workspace_id="project", session_id="chat-test")
             main.learning_engine = StubLearning()
             try:
@@ -353,7 +358,7 @@ class TaskConsistencyTests(unittest.TestCase):
             'Action: {"action":"write_file","args":"repeat-marker.txt|REPEAT_OK"}',
             "The marker is complete.",
         ]
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
@@ -367,7 +372,7 @@ class TaskConsistencyTests(unittest.TestCase):
                 return original_write(args)
 
             main._set_workspace_root(root)
-            store = MemoryBank(root / "state.sqlite3").store
+            store = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store
             main.tasks = TaskManager(store, workspace_id="project", session_id="receipt-test")
             main.learning_engine = StubLearning()
             try:
@@ -427,12 +432,12 @@ class TaskConsistencyTests(unittest.TestCase):
             'Action: {"action":"git_commit","args":"audit: post-merge"}',
             "Committed audit file.",
         ]
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=root, check=True)
-            store = MemoryBank(root / "state.sqlite3").store
+            store = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
             original_learning = main.learning_engine
@@ -469,8 +474,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual(reopened.recover(), [])
 
     def test_plain_string_plan_reconciles_in_order_after_restart_and_leaves_unmatched_receipts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="plain-plan")
             manager.from_llm_block(
                 "TaskList:\n```json\n"
@@ -572,12 +577,12 @@ class TaskConsistencyTests(unittest.TestCase):
             'Action: {"action":"git_commit","args":"audit: plain plan"}',
             "Committed the plain-string plan.",
         ]
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=root, check=True)
-            store = MemoryBank(root / "state.sqlite3").store
+            store = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
             original_learning = main.learning_engine
@@ -610,8 +615,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertIn("plain-string plan", reply)
 
     def test_plan_only_tasks_reconcile_in_order_after_restart(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="plan-only")
             original_tasks = main.tasks
             main.tasks = manager
@@ -669,12 +674,12 @@ class TaskConsistencyTests(unittest.TestCase):
             'Action: {"action":"git_commit","args":"audit: plan-only"}',
             "Committed the Plan-only work.",
         ]
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "OpenKyrozen Test"], cwd=root, check=True)
-            store = MemoryBank(root / "state.sqlite3").store
+            store = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store
             original_root = main._get_workspace_root()
             original_tasks = main.tasks
             original_learning = main.learning_engine
@@ -707,10 +712,10 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertIn("Plan-only work", reply)
 
     def test_web_natural_plan_receipts_match_and_survive_restart(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "README.md").write_text("Usage: run the baseline check.\n", encoding="utf-8")
-            store = MemoryBank(root / "state.sqlite3").store
+            store = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="web-project", session_id="web-natural")
             manager.add_task("Read the existing Python file before making changes.",
                              checkpoint={"action": "read_file", "args": "notes.py"})
@@ -758,8 +763,8 @@ class TaskConsistencyTests(unittest.TestCase):
             self.assertEqual(reopened.recover(), [])
 
     def test_receipt_cannot_satisfy_a_neighboring_task_without_exact_contract(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="receipt-match")
             read_index = manager.add_task(
                 "Inspect the README", checkpoint={"action": "read_file", "args": "README.md"}
@@ -800,8 +805,8 @@ class TaskConsistencyTests(unittest.TestCase):
                 self.outcome = kwargs
                 return []
 
-        with tempfile.TemporaryDirectory() as directory:
-            store = MemoryBank(Path(directory) / "state.sqlite3").store
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store
             manager = TaskManager(store, workspace_id="project", session_id="learning-blocked")
             index = manager.add_task(
                 "Run the verification command",
@@ -915,10 +920,10 @@ class TaskConsistencyTests(unittest.TestCase):
 
         original_root = main._get_workspace_root()
         original_tasks, original_learning = main.tasks, main.learning_engine
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             main._set_workspace_root(root)
-            main.tasks = TaskManager(MemoryBank(root / "state.sqlite3").store,
+            main.tasks = TaskManager(sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3"))).store,
                                      workspace_id="project", session_id="malformed-alias")
             main.learning_engine = StubLearning()
             try:
@@ -958,9 +963,9 @@ class TaskConsistencyTests(unittest.TestCase):
 
         original_root = main._get_workspace_root()
         original_tasks, original_learning = main.tasks, main.learning_engine
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             main._set_workspace_root(Path(directory))
-            main.tasks = TaskManager(MemoryBank(Path(directory) / "state.sqlite3").store,
+            main.tasks = TaskManager(sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store,
                                      workspace_id="project", session_id="ssai-retry")
             main.learning_engine = StubLearning()
             try:
@@ -995,38 +1000,52 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertEqual(failed.failure, "command_failed")
         self.assertTrue(retried.success)
 
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         class SlowProvider:
             def chat(self, _messages, _model):
-                time.sleep(0.2)
+                entered.set()
+                release.wait(5)
+                finished.set()
                 return "late", None
 
         original_provider = main.llm_provider
         main.llm_provider = SlowProvider()
         try:
-            with patch.object(main, "_provider_timeout_seconds", return_value=0.01):
-                started = time.monotonic()
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.1):
                 response = main._get_llm_response([])
+                self.assertTrue(entered.wait(2), "provider worker did not start")
+                self.assertFalse(finished.is_set(), "provider returned before timeout completed")
         finally:
+            release.set()
+            finished.wait(2)
             main.llm_provider = original_provider
-        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertTrue(finished.is_set(), "provider worker did not finish after release")
         self.assertIn("Provider timed out", response)
 
     def test_streaming_provider_obeys_deadline_and_discards_late_chunks(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         class SlowStreamingProvider:
             def chat_stream(self, _messages, _model):
-                time.sleep(0.2)
-                yield "late"
+                entered.set()
+                release.wait(5)
+                try:
+                    yield "late"
+                finally:
+                    finished.set()
 
         original_provider = main.llm_provider
         main.llm_provider = SlowStreamingProvider()
         chunks = []
         try:
-            with patch.object(main, "_provider_timeout_seconds", return_value=0.01):
-                started = time.monotonic()
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.1):
                 response = main._get_llm_response([], stream=True, on_chunk=chunks.append)
+                self.assertTrue(entered.wait(2), "provider worker did not start")
+                self.assertFalse(finished.is_set(), "provider returned before timeout completed")
         finally:
+            release.set()
+            finished.wait(2)
             main.llm_provider = original_provider
-        self.assertLess(time.monotonic() - started, 0.1)
+        self.assertTrue(finished.is_set(), "provider worker did not finish after release")
         self.assertIn("Provider timed out", response)
         self.assertEqual(chunks, [])
 
@@ -1085,11 +1104,75 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertEqual(answer, "Verified result")
         self.assertEqual(recap.call_count, 0)
 
+    def test_protocol_error_marks_turn_incomplete_without_tool_receipts(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        main.subagent_manager = SimpleNamespace(coordinator=None)
+        main.tasks = SimpleNamespace(tasks=[], working_plan=None)
+        turn = SimpleNamespace(
+            final_answer="No work was run.", protocol_error_message="A Working Plan is required.",
+            tool_records=[], turn_prompt_total=0, turn_completion_total=0, turn_start=time.time(),
+            tool_calls=[], pending_interaction_reply=None, interaction_mode="agent", fix_workflow=None,
+            user_input="complex task", response_text="", learning_run=None, learning_receipts=[],
+            complexity="complex", runtime_status="completed",
+        )
+        try:
+            with patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                    patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                answer = main._complete_turn(turn)
+        finally:
+            main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(answer, "A Working Plan is required.")
+        self.assertEqual(turn.runtime_status, "incomplete")
+
+    def test_completed_old_plan_does_not_hide_a_protocol_error(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        main.subagent_manager = SimpleNamespace(coordinator=None)
+        main.tasks = SimpleNamespace(tasks=[], working_plan=SimpleNamespace(status="completed", task_ids=[]))
+        turn = SimpleNamespace(
+            final_answer="No work was run.", protocol_error_message="A Working Plan is required.",
+            tool_records=[], turn_prompt_total=0, turn_completion_total=0, turn_start=time.time(),
+            tool_calls=[], pending_interaction_reply=None, interaction_mode="agent", fix_workflow=None,
+            user_input="complex task", response_text="", learning_run=None, learning_receipts=[],
+            complexity="complex", runtime_status="completed",
+        )
+        try:
+            with patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                    patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                main._complete_turn(turn)
+        finally:
+            main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(turn.runtime_status, "incomplete")
+
+    def test_protocol_error_preserves_blocked_plan_status(self):
+        from types import SimpleNamespace
+        original_manager, original_tasks = main.subagent_manager, main.tasks
+        main.subagent_manager = SimpleNamespace(coordinator=None)
+        main.tasks = SimpleNamespace(
+            tasks=[{"id": "task-1", "status": "blocked", "description": "Wait for access"}],
+            working_plan=SimpleNamespace(status="active", task_ids=["task-1"]),
+        )
+        turn = SimpleNamespace(
+            final_answer="Work blocked.", protocol_error_message="A Working Plan is required.",
+            tool_records=[], turn_prompt_total=0, turn_completion_total=0, turn_start=time.time(),
+            tool_calls=[], pending_interaction_reply=None, interaction_mode="agent", fix_workflow=None,
+            user_input="complex task", response_text="", learning_run=None, learning_receipts=[],
+            complexity="complex", runtime_status="completed",
+        )
+        try:
+            with patch.object(main, "_advance_fix_workflow", side_effect=lambda state, _request, answer, *_args: (state, answer)), \
+                    patch.object(main, "_finish_learning_run", side_effect=lambda _run, _receipts, _task, result, *_args: result):
+                main._complete_turn(turn)
+        finally:
+            main.subagent_manager, main.tasks = original_manager, original_tasks
+        self.assertEqual(turn.runtime_status, "blocked")
+
     def test_simple_turn_completion_ignores_an_unrelated_pending_task_ledger(self):
         from types import SimpleNamespace
         original_manager, original_tasks = main.subagent_manager, main.tasks
-        with tempfile.TemporaryDirectory() as directory:
-            tasks = TaskManager(MemoryBank(Path(directory) / "state.sqlite3").store,
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            tasks = TaskManager(sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store,
                                 workspace_id="completion", session_id="simple-turn")
             tasks.add_task("Unrelated unfinished work")
             main.subagent_manager, main.tasks = SimpleNamespace(coordinator=None), tasks
@@ -1112,8 +1195,8 @@ class TaskConsistencyTests(unittest.TestCase):
     def test_complex_plan_keeps_answer_and_reports_incomplete_or_blocked_state(self):
         from types import SimpleNamespace
         original_manager, original_tasks = main.subagent_manager, main.tasks
-        with tempfile.TemporaryDirectory() as directory:
-            tasks = TaskManager(MemoryBank(Path(directory) / "state.sqlite3").store,
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            tasks = TaskManager(sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3"))).store,
                                 workspace_id="completion", session_id="complex-turn")
             plan = tasks.edit_plan(complexity="complex", expected_revision=0, operations=[
                 {"op": "add", "ref": "inspect", "task": {
@@ -1152,20 +1235,45 @@ class TaskConsistencyTests(unittest.TestCase):
         self.assertIn("Repository access is unavailable", blocked_answer)
 
     def test_streaming_provider_timeout_covers_stalls_after_first_chunk(self):
+        from types import SimpleNamespace
+        from openkyrozen.providers import retry
+
+        stalled, release, finished, expired = (threading.Event() for _ in range(4))
+        started = time.monotonic()
+
+        def monotonic():
+            elapsed = time.monotonic() - started
+            # Advance the deadline after delivery; retain a real-time harness guard.
+            return elapsed + 1 if expired.is_set() else max(0, elapsed - 2)
+
         class SlowStreamingProvider:
             def chat_stream(self, _messages, _model):
-                yield "first"
-                time.sleep(0.2)
-                yield "late"
+                try:
+                    yield "first"
+                    stalled.set()
+                    release.wait(2)
+                    yield "late"
+                finally:
+                    finished.set()
+
+        chunks = []
+
+        def on_chunk(chunk):
+            chunks.append(chunk)
+            self.assertTrue(stalled.wait(2))
+            self.assertFalse(finished.is_set())
+            expired.set()
 
         original_provider = main.llm_provider
         main.llm_provider = SlowStreamingProvider()
-        chunks = []
         try:
-            with patch.object(main, "_provider_timeout_seconds", return_value=0.03):
-                response = main._get_llm_response([], stream=True, on_chunk=chunks.append)
+            with patch.object(main, "_provider_timeout_seconds", return_value=0.03), \
+                    patch.object(retry, "time", SimpleNamespace(monotonic=monotonic)):
+                response = main._get_llm_response([], stream=True, on_chunk=on_chunk)
         finally:
+            release.set()
             main.llm_provider = original_provider
+            self.assertTrue(finished.wait(2))
         self.assertIn("Provider timed out", response)
         self.assertEqual(chunks, ["first"])
         self.assertEqual(main._last_prompt_tokens, 0)

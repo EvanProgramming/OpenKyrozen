@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -187,8 +188,8 @@ class StreamEventContractTests(unittest.TestCase):
                 yield ResponseComplete(ModelResponse(text="live", finish_reason=FinishReason.FINAL,
                     usage={"prompt_tokens": 2, "completion_tokens": 1}))
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             try:
                 app.runtime.llm_provider = StreamingProvider(ProviderConfig(provider="custom", model_simple="m"))
                 observed = []
@@ -232,8 +233,8 @@ class StreamEventContractTests(unittest.TestCase):
             def chat_stream(self, messages, model=None):
                 yield "[Ollama Error] context length exceeded"
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
-            app = build_application(memory=build_memory(Path(directory) / "state.sqlite3"))
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))))
             try:
                 app.runtime.llm_provider = LegacyStreamProvider()
                 context_token = app.runtime._active_context_state.set(object())
@@ -337,7 +338,7 @@ class StreamEventContractTests(unittest.TestCase):
         from tests.test_provider_native_tools import _google_schema_sdk
 
         chunk = SimpleNamespace(response_id="response", model_version="gemini", usage_metadata=
-            SimpleNamespace(prompt_token_count=2, candidates_token_count=2), prompt_feedback=None,
+            SimpleNamespace(prompt_token_count=2, candidates_token_count=2, thoughts_token_count=11), prompt_feedback=None,
             candidates=[SimpleNamespace(finish_reason="STOP", content=SimpleNamespace(role="model", parts=[
                 SimpleNamespace(text="", thought=False, thought_signature="signed", function_call=None),
                 SimpleNamespace(text="working", thought=False, function_call=None),
@@ -349,12 +350,17 @@ class StreamEventContractTests(unittest.TestCase):
         provider._continuation_id = "gemini-stream"
         provider._client = SimpleNamespace(models=SimpleNamespace(generate_content_stream=Mock(return_value=iter([chunk]))))
         tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
-        with _google_schema_sdk(), patch("openkyrozen.providers.usage._track_cost"):
+        with _google_schema_sdk(), patch("openkyrozen.providers.usage._track_cost") as charge:
             events = list(get_model_events(provider, [{"role": "user", "content": "go"}], "gemini", tools=tools))
         response = events[-1].response
         self.assertEqual(response.tool_calls[0].arguments, {"path": "x"})
         self.assertEqual(response.continuation.payload["parts"][0]["thought_signature"], "signed")
         self.assertEqual(sum(isinstance(event, TextDelta) for event in events), 1)
+        self.assertEqual(response.usage["completion_tokens"], 13)
+        self.assertEqual(response.usage["reasoning_tokens"], 11)
+        self.assertTrue(any(isinstance(event, UsageUpdate) and event.usage["completion_tokens"] == 13
+                            for event in events))
+        self.assertEqual(charge.call_args.args[1], response.usage)
 
     def test_bedrock_stream_collects_text_tools_usage_and_reasoning_signature(self):
         from openkyrozen.providers.bedrock import BedrockProvider
@@ -405,6 +411,84 @@ class StreamEventContractTests(unittest.TestCase):
         self.assertIsInstance(events[-1], ResponseError)
         self.assertEqual(events[-1].error.kind, ProviderErrorKind.RATE_LIMIT)
 
+    def test_strict_chat_rejects_changed_response_identity_and_hashes_invalid_arguments(self):
+        import hashlib
+        import json
+        from openkyrozen.providers.openai import OpenAICompatProvider
+
+        malformed = '{"path":"partial'
+        chunks = [
+            SimpleNamespace(id="original", model="m", choices=[SimpleNamespace(index=0, finish_reason=None,
+                delta=SimpleNamespace(tool_calls=[SimpleNamespace(index=0, id="call-1", type="function",
+                    function=SimpleNamespace(name="read_file", arguments=malformed))]))], usage=None),
+            SimpleNamespace(id="different", model="m", choices=[SimpleNamespace(index=0,
+                finish_reason="tool_calls", delta=SimpleNamespace())],
+                usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2)),
+        ]
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
+        provider._tool_wire_decoder = lambda raw, _schema, *, tool_name: json.dumps(json.loads(raw))
+        send = Mock()
+        provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=send)))
+        tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
+
+        send.return_value = iter(chunks)
+        with patch("openkyrozen.providers.usage._track_cost"):
+            terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
+        self.assertIsInstance(terminal, ResponseError)
+        self.assertEqual(terminal.error.wire_evidence["issue"], "response_identity_changed")
+        self.assertFalse(terminal.error.malformed_tool_json)
+
+        chunks[1].id = "original"
+        send.return_value = iter(chunks)
+        with patch("openkyrozen.providers.usage._track_cost"):
+            terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
+        self.assertIsInstance(terminal, ResponseError)
+        self.assertTrue(terminal.error.malformed_tool_json)
+        evidence = terminal.error.wire_evidence
+        self.assertEqual(evidence["response_id"], "original")
+        self.assertEqual(evidence["finish_reason"], "tool_calls")
+        self.assertEqual(evidence["calls"][0]["arguments_bytes"], len(malformed.encode()))
+        self.assertEqual(evidence["calls"][0]["arguments_sha256"], hashlib.sha256(malformed.encode()).hexdigest())
+        self.assertEqual(evidence["malformed_argument"], {
+            "index": 0, "tool_name": "read_file", "byte_offset": 8,
+        })
+        self.assertNotIn("partial", repr(evidence))
+
+    def test_strict_chat_assembles_interleaved_calls_before_decoding(self):
+        from openkyrozen.providers.openai import OpenAICompatProvider
+
+        def frame(calls=(), finish=None, usage=None):
+            return SimpleNamespace(id="r", model="m", choices=[SimpleNamespace(
+                index=0, finish_reason=finish, delta=SimpleNamespace(tool_calls=calls))], usage=usage)
+
+        def part(index, arguments, call_id=None):
+            return SimpleNamespace(index=index, id=call_id, type="function" if call_id else None,
+                function=SimpleNamespace(name="read_file" if call_id else None, arguments=arguments))
+
+        usage = SimpleNamespace(prompt_tokens=4, completion_tokens=2)
+        chunks = [frame([part(0, '{"path":', "a")]), frame([part(1, '{"path":"b', "b")]),
+                  frame([part(0, '"a"}'), part(1, '"}')]), frame(finish="tool_calls", usage=usage)]
+        provider = OpenAICompatProvider.__new__(OpenAICompatProvider)
+        provider.config = SimpleNamespace(provider="deepseek", model_simple="m")
+        provider._tool_wire_decoder = Mock(side_effect=lambda raw, _schema, *, tool_name: raw)
+        create = Mock(return_value=iter(chunks))
+        provider._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        tools = [{"name": "read_file", "description": "read", "parameters": {"type": "object"}}]
+        with patch("openkyrozen.providers.usage._track_cost"):
+            terminal = list(get_model_events(provider, [], "m", tools=tools))[-1]
+        self.assertIsInstance(terminal, ResponseComplete)
+        self.assertEqual([(call.id, call.arguments) for call in terminal.response.tool_calls],
+                         [("a", {"path": "a"}), ("b", {"path": "b"})])
+        self.assertEqual([args[0] for args, _ in provider._tool_wire_decoder.call_args_list],
+                         ['{"path":"a"}', '{"path":"b"}'])
+
+        create.return_value = iter([*chunks[:-1], frame(finish="length", usage=usage)])
+        provider._tool_wire_decoder.reset_mock()
+        with patch("openkyrozen.providers.usage._track_cost"):
+            self.assertIsInstance(list(get_model_events(provider, [], "m", tools=tools))[-1], ResponseError)
+        provider._tool_wire_decoder.assert_not_called()
+
     def test_openai_usage_is_charged_when_final_call_arguments_are_invalid(self):
         from openkyrozen.providers.openai import OpenAICompatProvider
 
@@ -427,6 +511,80 @@ class StreamEventContractTests(unittest.TestCase):
                 tools=[{"name": "lookup", "description": "lookup", "parameters": {"type": "object"}}]))
         self.assertIsInstance(events[-1], ResponseError)
         tracker.assert_called_once()
+
+    def test_responses_stream_can_use_complete_arguments_from_the_same_call(self):
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.models import ToolReply
+        from openkyrozen.providers.openai import OpenAIResponsesProvider
+
+        arguments = '{"path":"x"}'
+        tool = {"name": "read_file", "description": "read", "parameters": {"type": "object"}}
+        messages = [{"role": "user", "content": "go"}]
+        for case in ("matched", "initial fragment", "wrong id", "wrong name", "duplicate", "invalid",
+                     "fragments disagree", "wrong delta id", "duplicate open", "conflicting item",
+                     "incomplete", "wrong terminal status", "second call invalid"):
+            with self.subTest(case=case), patch("openkyrozen.providers.usage._track_cost") as track:
+                item = SimpleNamespace(type="function_call", id="fc-1", call_id="call-1",
+                    name="read_file", arguments='{"path":')
+                status = "incomplete" if case == "incomplete" else "completed"
+                response = SimpleNamespace(id="resp", model="m",
+                    status="tool_calls" if case == "wrong terminal status" else status, output_text="",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=2, output_tokens_details=None),
+                    incomplete_details=None, output=[item])
+                if case == "second call invalid":
+                    response.output.append(SimpleNamespace(type="function_call", id="fc-2",
+                        call_id="call-2", name="read_file", arguments='{"path":"y","path":"z"}'))
+                done = SimpleNamespace(type="response.function_call_arguments.done", output_index=0,
+                    item_id="other" if case == "wrong id" else item.id,
+                    name="write_file" if case == "wrong name" else item.name,
+                    arguments='{"path":"x","path":"y"}' if case == "invalid" else arguments)
+                prefix = arguments[:3] if case == "initial fragment" else ""
+                opening_item = SimpleNamespace(**{**vars(item), "arguments": prefix})
+                opening = SimpleNamespace(type="response.output_item.added", output_index=0, item=opening_item)
+                completed_item = SimpleNamespace(**{**vars(item),
+                    "arguments": '{"path":"y"}' if case == "conflicting item" else arguments})
+                stream = [
+                    opening,
+                    *([opening] if case == "duplicate open" else []),
+                    SimpleNamespace(type="response.function_call_arguments.delta", output_index=0,
+                        item_id="other" if case == "wrong delta id" else item.id,
+                        delta='{"path":"y"}' if case == "fragments disagree" else done.arguments[len(prefix):]),
+                    done,
+                    *([done] if case == "duplicate" else []),
+                    SimpleNamespace(type="response.output_item.done", output_index=0, item=completed_item),
+                    SimpleNamespace(type="response." + status, response=response),
+                ]
+                provider = OpenAIResponsesProvider.__new__(OpenAIResponsesProvider)
+                provider.config = ProviderConfig(provider="openai", model_simple="m")
+                provider._continuation_id = "responses-copy"
+                create = Mock(return_value=iter(stream))
+                provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+                events = list(get_model_events(provider, messages, "m", tools=[tool]))
+                track.assert_called_once()
+                if case not in {"matched", "initial fragment"}:
+                    self.assertIsInstance(events[-1], ResponseError)
+                    self.assertFalse(any(isinstance(event, ResponseComplete) for event in events))
+                    if case == "invalid":
+                        wire = events[-1].error.wire_evidence
+                        self.assertEqual(wire["json_error"], "Expecting value")
+                        self.assertEqual(wire["declared_tool"], "read_file")
+                        self.assertNotIn('{"path":', repr(wire))
+                    if case == "second call invalid":
+                        self.assertTrue(events[-1].error.malformed_tool_json)
+                        self.assertEqual(len(events[-1].error.wire_evidence["terminal"]), 2)
+                    continue
+                self.assertIsInstance(events[-1], ResponseComplete)
+                result = events[-1].response
+                self.assertEqual(result.tool_calls[0].arguments, {"path": "x"})
+                self.assertEqual(result.continuation.payload["output"][0]["arguments"], arguments)
+                self.assertEqual(item.arguments, '{"path":')
+                create.return_value = SimpleNamespace(id="end", model="m", status="completed",
+                    output_text="done", usage=None, output=[])
+                provider.chat_response([*messages, result, ToolReply("call-1", "read_file", {"value": "ok"})],
+                    "m", tools=[tool])
+                continued = create.call_args.kwargs["input"]
+                self.assertEqual(continued[-2]["arguments"], arguments)
+                self.assertEqual(continued[-1]["call_id"], "call-1")
 
     def test_responses_api_adapters_stream_fragmented_function_calls(self):
         from openkyrozen.providers.config import ProviderConfig

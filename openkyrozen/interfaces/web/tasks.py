@@ -155,6 +155,9 @@ async def api_v2_resume_task(self, task_id: str):
         raise HTTPException(404, "Failed or blocked task not found in this scope")
     manager = service._task_manager(stored.get("session_id"))
     manager.recover()
+    current = next((item for item in manager.tasks if item["id"] == str(task_id)), None)
+    if current and (current.get("checkpoint", {}).get("recovery_effect") or {}).get("status") == "unknown":
+        raise HTTPException(409, "Interrupted operation has unknown effects; inspect and reconcile it before resuming")
     task = manager.resume(task_id)
     if task is None:
         raise HTTPException(404, "Failed or blocked task not found in this scope")

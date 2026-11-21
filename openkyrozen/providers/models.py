@@ -12,7 +12,9 @@ from typing import Any
 
 
 class ProviderContractError(ValueError):
-    """A received response cannot satisfy the contract; do not replay generation."""
+    """A received response cannot satisfy the contract or be retried by the transport."""
+
+    malformed_tool_json = False
 
 
 @contextmanager
@@ -400,7 +402,13 @@ def model_response(*, provider, model, text, usage, raw_finish_reason=None,
             try:
                 arguments = json.loads(arguments, object_pairs_hook=_unique_object)
             except (ValueError, RecursionError) as exc:
-                raise ProviderContractError("Invalid serialized tool arguments") from exc
+                error = ProviderContractError("Invalid serialized tool arguments")
+                error.malformed_tool_json = (
+                    isinstance(exc, json.JSONDecodeError) and not blocked
+                    and normalize_finish(raw_finish_reason, has_calls=True, detail=finish_detail)
+                    == FinishReason.TOOL_REQUEST
+                )
+                raise error from exc
         parsed.append(ToolCall(call_id, name, arguments))
     raw = getattr(raw_finish_reason, "value", raw_finish_reason)
     metadata = {"provider": provider, "model": actual_model if isinstance(actual_model, str) and actual_model else model, "response_id": scope,
@@ -413,11 +421,13 @@ def model_response(*, provider, model, text, usage, raw_finish_reason=None,
                          FinishReason.BLOCKED if blocked else normalize_finish(raw, has_calls=bool(parsed), detail=finish_detail), metadata)
 
 
-def responses_output(response):
+def responses_output(response, completed_arguments=None):
     """Extract Responses API function calls without using its flattened text."""
     calls = []
-    for item in getattr(response, "output", None) or ():
+    for index, item in enumerate(getattr(response, "output", None) or ()):
         if getattr(item, "type", None) == "function_call":
-            calls.append((getattr(item, "call_id", None), getattr(item, "name", None),
-                          getattr(item, "arguments", None)))
+            arguments = getattr(item, "arguments", None)
+            if completed_arguments is not None:
+                arguments = completed_arguments.get(index, arguments)
+            calls.append((getattr(item, "call_id", None), getattr(item, "name", None), arguments))
     return calls

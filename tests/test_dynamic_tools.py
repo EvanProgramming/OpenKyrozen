@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import unittest
 import tempfile
 from pathlib import Path
@@ -8,9 +9,9 @@ from openkyrozen.security.tool_policy import resolve_capabilities
 
 class DynamicToolRemovalTests(unittest.TestCase):
     def test_define_tool_text_is_rejected_without_registration(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             runtime = build_application(
-                memory=build_memory(Path(directory) / "state.sqlite3"), surface="cli",
+                memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3"))), surface="cli",
             ).runtime
             before = set(runtime.tool_registry.specs)
             response = (

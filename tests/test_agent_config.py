@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import os
 import subprocess
 import sys
@@ -90,10 +91,10 @@ class AgentConfigTests(unittest.TestCase):
     def test_custom_role_influences_prompt_and_capability_has_real_effect(self):
         original_memory = main.memory_bank
         original_root = main._get_workspace_root()
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             root = Path(directory)
             (root / "agent.yaml").write_text(_config_text("reviewer", "read"), encoding="utf-8")
-            main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="config", session_id="test")
+            main.memory_bank = sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", workspace_id="config", session_id="test")))
             main._set_workspace_root(root)
             try:
                 with patch.object(main, "_retrieve_failure", return_value=[]), \

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import ExitStack, closing
 
 import sqlite3
 import stat
@@ -110,6 +111,15 @@ def _sqlite(path):
 
 
 class SQLiteMigrationTests(unittest.TestCase):
+    def test_each_runtime_connection_uses_the_configured_wal_sync_mode(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            database = sqlite_owners.enter_context(closing(SQLiteDatabase(Path(directory) / "sync.sqlite3")))
+
+            with database.connection() as connection:
+                synchronous = connection.execute("PRAGMA synchronous").fetchone()[0]
+
+        self.assertEqual(synchronous, 1)  # NORMAL is configured by SQLiteDatabase initialization.
+
     def _historical_database(self, path: Path, version: int, *, malformed: bool = False) -> None:
         db = sqlite3.connect(path)
         try:
@@ -145,11 +155,11 @@ class SQLiteMigrationTests(unittest.TestCase):
 
     def test_historical_versions_upgrade_in_order_and_preserve_user_data(self):
         for version in (1, 2, 3):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
                 path = Path(directory) / "state.sqlite3"
                 self._historical_database(path, version)
 
-                SQLiteDatabase(path)
+                sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
                 with _sqlite(path) as db:
                     self.assertEqual(
@@ -165,12 +175,12 @@ class SQLiteMigrationTests(unittest.TestCase):
                         self.assertEqual(db.execute("SELECT id FROM usage_attempts").fetchone()[0], "usage-1")
                     if version >= 3:
                         self.assertEqual(db.execute("SELECT head_id FROM history_heads").fetchone()[0], "history-1")
-                second_open = SQLiteDatabase(path)
+                second_open = sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
                 self.assertIsNone(second_open.last_backup_path)
                 self.assertEqual(len(list(Path(directory).glob("*.backup.*"))), 1)
 
     def test_incompatible_existing_table_rolls_back_migration(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "state.sqlite3"
             self._historical_database(path, 2)
             with _sqlite(path) as db:
@@ -180,7 +190,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
             with self.assertRaisesRegex(RuntimeError, "history_nodes is missing required columns"):
-                SQLiteDatabase(path)
+                sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertEqual(
@@ -193,10 +203,10 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
     def test_fresh_database_records_each_ordered_migration(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "fresh.sqlite3"
 
-            SQLiteDatabase(path)
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertEqual(
@@ -205,14 +215,14 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
     def test_compacted_prior_version_history_remains_valid_after_upgrade(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "compacted-history.sqlite3"
             self._historical_database(path, 2)
             with _sqlite(path) as db:
                 db.execute("DELETE FROM schema_migrations WHERE version < 2")
 
-            SQLiteDatabase(path)
-            SQLiteDatabase(path)
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertEqual(
@@ -221,14 +231,14 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
     def test_upgrade_accepts_prior_current_version_marker_without_backfilled_history(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "legacy-history.sqlite3"
             self._historical_database(path, 3)
             with _sqlite(path) as db:
                 db.execute("DELETE FROM schema_migrations WHERE version < 3")
 
-            SQLiteDatabase(path)
-            SQLiteDatabase(path)
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertEqual(
@@ -237,13 +247,13 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
     def test_sparse_legacy_history_is_valid_when_declared_schema_is_complete(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "sparse-history.sqlite3"
             self._historical_database(path, 3)
             with _sqlite(path) as db:
                 db.execute("DELETE FROM schema_migrations WHERE version = 2")
 
-            SQLiteDatabase(path)
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertEqual(
@@ -252,7 +262,7 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
     def test_missing_task_columns_are_rejected_before_startup_succeeds(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "missing-task-columns.sqlite3"
             self._historical_database(path, 1)
             with _sqlite(path) as db:
@@ -260,12 +270,12 @@ class SQLiteMigrationTests(unittest.TestCase):
             before = path.read_bytes()
 
             with self.assertRaisesRegex(RuntimeError, "tasks is missing required columns"):
-                SQLiteDatabase(path)
+                sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             self.assertEqual(path.read_bytes(), before)
 
     def test_future_version_is_rejected_without_modifying_database(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "future.sqlite3"
             with _sqlite(path) as db:
                 db.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
@@ -275,14 +285,14 @@ class SQLiteMigrationTests(unittest.TestCase):
             before = path.read_bytes()
 
             with self.assertRaisesRegex(RuntimeError, "newer schema"):
-                SQLiteDatabase(path)
+                sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             self.assertEqual(path.read_bytes(), before)
             self.assertFalse(list(Path(directory).glob("*.backup.*")))
 
     def test_nonpositive_or_gapped_migration_history_is_rejected(self):
         for versions in ((0,), (1, 3)):
-            with self.subTest(versions=versions), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(versions=versions), tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
                 path = Path(directory) / "invalid-history.sqlite3"
                 with _sqlite(path) as db:
                     db.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
@@ -290,24 +300,24 @@ class SQLiteMigrationTests(unittest.TestCase):
                 before = path.read_bytes()
 
                 with self.assertRaisesRegex(RuntimeError, "inconsistent|migration"):
-                    SQLiteDatabase(path)
+                    sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
                 self.assertEqual(path.read_bytes(), before)
                 self.assertFalse(list(Path(directory).glob("*.backup.*")))
 
     def test_inconsistent_core_schema_is_rejected_without_repairing_it(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "inconsistent.sqlite3"
             self._historical_database(path, 1, malformed=True)
             before = path.read_bytes()
 
             with self.assertRaisesRegex(RuntimeError, "inconsistent"):
-                SQLiteDatabase(path)
+                sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             self.assertEqual(path.read_bytes(), before)
 
     def test_upgrade_backup_is_private_and_contains_committed_wal_data(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "legacy.sqlite3"
             self._historical_database(path, 1)
             wal_writer = sqlite3.connect(path)
@@ -315,7 +325,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             wal_writer.execute("UPDATE tasks SET description='committed WAL state' WHERE id='legacy-task'")
             wal_writer.commit()
 
-            SQLiteDatabase(path)
+            sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             backups = list(Path(directory).glob("legacy.sqlite3.backup.*"))
             self.assertEqual(len(backups), 1)
@@ -326,14 +336,14 @@ class SQLiteMigrationTests(unittest.TestCase):
             wal_writer.close()
 
     def test_failed_migration_rolls_back_schema_and_version(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "rollback.sqlite3"
             self._historical_database(path, 1)
             with _sqlite(path) as db:
                 db.execute("CREATE VIEW usage_attempts AS SELECT 1 AS id")
 
             with self.assertRaises(sqlite3.OperationalError):
-                SQLiteDatabase(path)
+                sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertEqual(db.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0], 1)
@@ -342,13 +352,13 @@ class SQLiteMigrationTests(unittest.TestCase):
                 self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='learning_runtime'").fetchone())
 
     def test_same_version_additive_schema_variant_is_completed_with_backup(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             path = Path(directory) / "additive.sqlite3"
             self._historical_database(path, 3)
             with _sqlite(path) as db:
                 db.execute("DROP TABLE learning_runtime")
 
-            database = SQLiteDatabase(path)
+            database = sqlite_owners.enter_context(closing(SQLiteDatabase(path)))
 
             with _sqlite(path) as db:
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name='learning_runtime'").fetchone())
@@ -365,7 +375,7 @@ class SQLiteMigrationTests(unittest.TestCase):
             def initialize():
                 try:
                     barrier.wait()
-                    SQLiteDatabase(path)
+                    SQLiteDatabase(path).close()
                 except Exception as exc:
                     errors.append(exc)
 
@@ -385,8 +395,8 @@ class SQLiteMigrationTests(unittest.TestCase):
                 )
 
     def test_task_replacement_rolls_back_if_any_new_row_is_invalid(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = SQLiteDatabase(Path(directory) / "tasks.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            database = sqlite_owners.enter_context(closing(SQLiteDatabase(Path(directory) / "tasks.sqlite3")))
             repository = TasksRepository(database)
             previous = {"id": "old", "description": "keep", "status": "pending"}
             repository.replace_tasks([previous], workspace_id="project")
@@ -401,8 +411,8 @@ class SQLiteMigrationTests(unittest.TestCase):
             self.assertEqual([row["id"] for row in rows], ["old"])
 
     def test_approval_decisions_are_scoped_versioned_history_not_authority(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             request = ApprovalRequest(
                 call_id="call-1", tool_name="write_file",
                 arguments={"path": "notes.txt", "api_key": "secret-value"},
@@ -442,8 +452,8 @@ class SQLiteMigrationTests(unittest.TestCase):
             self.assertEqual(payload["mode"], "ask")
 
     def test_cli_approval_is_persisted_to_the_same_scoped_event_history(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             request = ApprovalRequest(
                 call_id="call-cli", tool_name="git_push", arguments={"remote": "origin"},
                 workspace_id="project", session_id="session-cli", tool_version="1",
@@ -483,8 +493,8 @@ class SQLiteMigrationTests(unittest.TestCase):
             self.assertEqual(events[0]["payload"]["call_id"], "call-cli")
 
     def test_fallback_tui_approval_records_one_permission_decision(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
 
             class Runtime:
                 _EXECUTION_SURFACE = "tui"

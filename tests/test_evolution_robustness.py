@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import tempfile
@@ -27,11 +28,14 @@ class EvolutionRobustnessTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         root = Path(self.directory.name)
-        self.memory = MemoryBank(root / "state.sqlite3", workspace_id="project")
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
+        self.memory = self._sqlite_owners.enter_context(closing(MemoryBank(root / "state.sqlite3", workspace_id="project")))
         self.registry = SkillRegistry(self.memory.store, workspace_id="project", root=root / "skills")
         self.engine = LearningEngine(self.memory, registry=self.registry)
 
     def tearDown(self):
+        self._sqlite_owners.close()
         self.directory.cleanup()
 
     def _candidate(self, run_id="source"):
@@ -47,9 +51,11 @@ class EvolutionRobustnessTests(unittest.TestCase):
         other = self.engine.begin_run("coder", "pytest", provider_model="provider:model-b")
         self.assertEqual(self.engine.artifact_context(other), ("", []))
         self.registry.set_learned_status(candidate["skill_id"], "active")
+        measurements = {"verified_success": True, "latency": 0.5, "cost_rmb": 0.002,
+                        "corrections": 0, "repeated_errors": 0}
         paired = [
-            {"case_id": "a", "verified_success": True, "provider_model": "provider:model-a"},
-            {"case_id": "b", "verified_success": True, "provider_model": "provider:model-b"},
+            {**measurements, "case_id": "a", "provider_model": "provider:model-a"},
+            {**measurements, "case_id": "b", "provider_model": "provider:model-b"},
         ]
         self.engine.record_shadow_replay(candidate["proposal_id"], paired, paired)
         context, receipts = self.engine.artifact_context(other)

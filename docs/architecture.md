@@ -125,7 +125,7 @@ alone. The structured provider foundation is described in [providers](providers.
 | Requirement / subsystem | Package owner and existing components | Responsibility and authority boundary | V3 implementation |
 | --- | --- | --- | --- |
 | R236 AgentEngine | `agent`: `runtime.AgentRuntime`, turn phases in `preparation`, `action_rounds`, `completion` | Sole foreground model/tool loop coordinator; calls provider, planning and executor contracts. Does not translate provider wire formats or bypass authorization. | [#238](https://github.com/EvanProgramming/OpenKyrozen/issues/238) |
-| R237 PlanningService | `tasks`: `engine.TaskManager`, `models`, `ports.TaskStore`; `agent.planner` currently bridges textual plans | Owns Working Plan and Strategic Plan transitions, validation and completion evidence. Working Plans are mutable; Strategic Plans require user approval and material revisions require reapproval. Storage persists transitions; the engine requests them. | [#241](https://github.com/EvanProgramming/OpenKyrozen/issues/241), [#242](https://github.com/EvanProgramming/OpenKyrozen/issues/242), [#245](https://github.com/EvanProgramming/OpenKyrozen/issues/245), [#246](https://github.com/EvanProgramming/OpenKyrozen/issues/246) |
+| R237 PlanningService | `tasks`: `planning.PlanningService`, `engine.TaskManager`, `models`, `ports.InteractionStore` and `ports.TaskStore`; `agent.modes.InteractionController` adapts planning state to interaction modes and questions | The tasks feature owns Strategic Plan validation, material revisions, approval transitions and completion evidence through PlanningService, and Working Plan edits through TaskManager. The compatibility interaction controller inherits those plan operations without reimplementing them. Storage persists transitions; the engine requests them. | [#241](https://github.com/EvanProgramming/OpenKyrozen/issues/241), [#242](https://github.com/EvanProgramming/OpenKyrozen/issues/242), [#245](https://github.com/EvanProgramming/OpenKyrozen/issues/245), [#246](https://github.com/EvanProgramming/OpenKyrozen/issues/246) |
 | R238 ToolRegistry | `tools`: `manifest.ToolRegistry`, `ToolManifest`, `registry`, `adapters.ToolAdapters` | Owns definitions, schemas, metadata and executor registration. Supplies the catalog to providers and execution; registration or discovery never grants permission. Extend this registry rather than adding a competing catalog. | [#232](https://github.com/EvanProgramming/OpenKyrozen/issues/232) |
 | R239 ToolExecutor | `agent`: `executor`, `types.ExecutionReceipt` | Owns authorized invocation and receipts. Uses registry definitions, security decisions and bound tool implementations; denied or failed calls cannot become successful effects. Does not own permission policy or plan transitions. | [#233](https://github.com/EvanProgramming/OpenKyrozen/issues/233), [#236](https://github.com/EvanProgramming/OpenKyrozen/issues/236) |
 | R240 SecurityPolicy | `security`: `capabilities`, `tool_policy`, `permissions`, `permission_gate` | Owns capability and approval authorization. Effective permissions stay within configured, session and delegated bounds; model output, routing advice and catalog entries cannot approve a call. The executor enforces the decision. | [#261](https://github.com/EvanProgramming/OpenKyrozen/issues/261) |
@@ -160,6 +160,32 @@ compatibility path until AgentEngine migration. Tool-call delta events expose
 call identity and fragment length but redact argument text because observers
 include remote UI surfaces; those deltas are progress metadata, not replayable
 invocation input.
+
+For a complex direct native turn, the engine offers only the permitted typed
+`update_plan` tool until an active Working Plan exists. It rejects a batch that
+also requests other tools, retries a planless final response within the turn's
+step limit, and reports an incomplete turn if planning is unavailable or fails.
+Existing Strategic Plan and tool permission checks still apply. Once a plan
+completes, the model may finish or establish a new plan before further tools.
+If a direct native agent responds FINAL before establishing its required plan or
+while runnable required work remains, the engine may provide one shared structured,
+scoped plan-state continuation per turn,
+within the existing request/step budget. This grants no tool authority and never
+starts tasks, replays work, changes acceptance or supplies completion evidence.
+Prose criteria remain unverified; any cancellation/replacement follows the normal
+plan rules and requires new receipts. Pending interactions/approval, denied or
+uncertain effects, active/unknown processes and outstanding delegation preserve
+handoff. Further refusal ends honestly incomplete. A plan cancelled after being
+observed active in this turn gets a final response without new tools; an older
+cancelled plan may be replaced for a new request. The conversation journal records
+only the continuation's plan ID, revision and reason, correlated to the preceding
+model request; its raw state is not added to replay history.
+Feedback includes at most twelve eligible task IDs/statuses and the total count,
+referring to the bounded pinned plan or its existing artifact for details. It
+does not duplicate full acceptance criteria or execution arguments.
+Missing-plan and active-plan feedback share the same allowance, which creation or
+revision cannot reset. Planned empty/truncated replies do not enter the generic
+empty-response retry path; non-planned turns retain that existing fallback.
 
 Permitted feature dependencies follow the responsibilities above: `agent` coordinates
 `tasks`, `tools` catalog/model contracts, `security`, provider contracts, `routing`,

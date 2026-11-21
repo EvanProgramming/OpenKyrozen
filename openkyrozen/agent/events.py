@@ -50,6 +50,8 @@ def runtime_event_as_legacy(event: "RuntimeEvent") -> dict[str, Any] | None:
                 "reason": payload.get("reason", "")}
     if event.kind == "interaction.updated":
         return {"event": "interaction", "interaction": payload.get("interaction", payload)}
+    if event.kind == "protocol.recovery":
+        return {"event": "protocol.recovery", "reason": payload.get("reason")}
     if event.kind == "security.permission_check":
         return {"event": "permission_check", "state": payload.get("state", ""),
                 "category": payload.get("category", "")}

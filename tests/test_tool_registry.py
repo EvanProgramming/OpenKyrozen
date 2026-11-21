@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import unittest
 from openkyrozen.tools.models import ToolResult
 from openkyrozen.tools.manifest import ToolRegistry
@@ -145,8 +146,8 @@ class RuntimeCatalogTests(unittest.TestCase):
         from openkyrozen.providers.models import ToolCall
         with tempfile.TemporaryDirectory() as home, patch.dict('os.environ', {
             'KYROZEN_DISABLE_VECTOR_INDEX': '1', 'KYROZEN_CLI_CAPABILITIES': 'full',
-        }):
-            app = build_application(memory=build_memory(Path(home) / 'state.sqlite3'), tools=ToolAdapters(home))
+        }), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(home) / 'state.sqlite3'))), tools=ToolAdapters(home))
             try:
                 with patch('openkyrozen.tools.git.subprocess.run') as run:
                     receipt = app.runtime.execute_call(
@@ -159,16 +160,16 @@ class RuntimeCatalogTests(unittest.TestCase):
             finally:
                 app.close()
 
-    def test_all53_bound_tools_and_workspace_isolation(self):
+    def test_all55_bound_tools_and_workspace_isolation(self):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
         from openkyrozen.app.bootstrap import build_application,build_memory
-        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}):
-            app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
+        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}), ExitStack() as sqlite_owners:
+            app=build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(home)/'state.sqlite3'))))
             try:
                 runtime=app.runtime
-                self.assertEqual(len(runtime.AVAILABLE_TOOLS),53)
+                self.assertEqual(len(runtime.AVAILABLE_TOOLS),55)
                 self.assertEqual(set(runtime.AVAILABLE_TOOLS),set(runtime.tool_registry.specs))
                 self.assertTrue(all(getattr(spec.executor, "__tool_result_executor__", None)
                                     for spec in runtime.tool_registry.specs.values()))
@@ -198,8 +199,8 @@ class SchemaValidationRegressions(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from openkyrozen.app.bootstrap import build_application, build_memory
-        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}):
-            app = build_application(memory=build_memory(Path(directory) / 'state.sqlite3'), tools=ToolAdapters(directory))
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ', {'KYROZEN_DISABLE_VECTOR_INDEX': '1'}), ExitStack() as sqlite_owners:
+            app = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / 'state.sqlite3'))), tools=ToolAdapters(directory))
             registry = app.runtime.tool_registry
             try:
                 self._assert_optional_examples(registry)
@@ -329,8 +330,8 @@ class LiveInventoryRegressions(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from openkyrozen.app.bootstrap import build_application,build_memory
-        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}):
-            app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
+        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}), ExitStack() as sqlite_owners:
+            app=build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(home)/'state.sqlite3'))))
             try:
                 runtime=app.runtime
                 spec=RegistryContractTests().make()
@@ -368,8 +369,8 @@ class GitHubReviewRegressions(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from openkyrozen.app.bootstrap import build_application,build_memory
-        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}):
-            app=build_application(memory=build_memory(Path(home)/'state.sqlite3'))
+        with tempfile.TemporaryDirectory() as home,patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}), ExitStack() as sqlite_owners:
+            app=build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(home)/'state.sqlite3'))))
             try:
                 runtime=app.runtime
                 runtime.tool_registry.register_spec(RegistryContractTests().make('MyTool',aliases=('MyAlias',)))

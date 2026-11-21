@@ -2,6 +2,7 @@ from __future__ import annotations
 from openkyrozen.tools.models import ToolError, ToolResult, command_tool_result, legacy_text_api, tool_failure, tool_json_result, tool_success
 
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -282,11 +283,20 @@ def git_show(self, args: str) -> str:
     """
     try:
         target = (args.get('reference', '') if isinstance(args, dict) else args).strip() or "HEAD"
-        cmd = ["git", "-C", self._git_working_directory(), "show", "--stat", target]
+        base = ["git", "-C", self._git_working_directory()]
+        commit = None
+        if isinstance(args, dict) and re.fullmatch(r"[0-9a-fA-F]{7,64}", target):
+            resolved = subprocess.run([*base, "rev-parse", "--verify", f"{target}^{{commit}}"],
+                                      capture_output=True, text=True, timeout=30)
+            identity = resolved.stdout.strip()
+            if (resolved.returncode == 0 and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", identity)
+                    and identity.startswith(target.lower())):
+                commit = identity
+        cmd = [*base, "show", "--stat", commit or target]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             return tool_failure('command_failed', f"Git show failed:\n{result.stderr}", retriable=False)
-        return tool_success(str(result.stdout.strip()))
+        return tool_success(str(result.stdout.strip()), metadata={"git_commit": commit} if commit else None)
     except Exception as e:
         return tool_failure('timeout' if isinstance(e, subprocess.TimeoutExpired) else 'execution_error', f"Error running git show: {e}", retriable=False)
 

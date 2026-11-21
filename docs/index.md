@@ -26,8 +26,12 @@ This index covers the current product guides, developer references, and dated en
 ## Build, contribute, and review evidence
 
 - [Development guide](development.md) and [contributor guide](../CONTRIBUTING.md) cover setup, layout, checks, and pull requests.
+- [V3 matched evaluation](v3-evaluation.md) documents the frozen cohort, independent checks, and spend controls.
+- [V3 release evidence](v3-release-evidence.md) documents signed, exact-candidate gates and the six-platform test and soak evidence workflow.
 - [Reports index](reports.md) explains the dates, scope, and limits of recorded audits, validation runs, and benchmarks.
 - [Modular refactor validation](modular-refactor-validation.md), [production audit](production-audit-2026-10-04.md), [shipping audit](production-shipping-audit-2026-10-04.md), and [self-learning audit](self-learning-audit-2026-10-03.md) preserve historical evidence.
+- [Ubuntu CI mirror repair](superpowers/plans/2026-11-11-ci-ubuntu-mirror.md) records signed archive retrieval and unchanged release acceptance requirements.
+- [Code investigation fixture verification](superpowers/plans/2026-11-12-qa-fixture-verification.md) records source-fact scoring, the route fixture correction and fresh-cohort requirements.
 - [V3 architecture ownership plan](superpowers/plans/2026-10-07-v3-issue-227.md) records the scoped implementation and verification for issue #227.
 - [V3 provider contract plan](superpowers/plans/2026-10-08-v3-issue-228.md) records the structured response and compatibility migration for issue #228.
 - [V3 provider error plan](superpowers/plans/2026-10-09-v3-issue-231.md) records typed failures, cancellation and bounded retry for issue #231.
@@ -49,3 +53,7 @@ This index covers the current product guides, developer references, and dated en
 - Machine-readable audit receipts and benchmark inputs remain beside their corresponding reports under `docs/` and `docs/benchmarks/`.
 
 The repository's [English overview](../README.md) links here. Technical guides are maintained in English; README translations provide localized entry points.
+
+- [V3 finalization execution plan](superpowers/plans/2026-11-07-v3-finalization.md)
+
+- [V3 finalization status and release blockers](v3-finalization-status.md)

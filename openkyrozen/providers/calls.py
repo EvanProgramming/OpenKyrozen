@@ -4,11 +4,13 @@ import os
 import math
 import sys
 import uuid
+import hashlib
+import json
 from typing import Any
 from openkyrozen.providers.usage import usage_scope
 from openkyrozen.providers.base import get_model_response, get_model_events
 from openkyrozen.providers.models import (
-    ModelResponse, ToolReply, ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate,
+    ModelResponse, ProviderContractError, ToolReply, ResponseComplete, ResponseError, TextDelta, ToolCallDelta, UsageUpdate,
 )
 from openkyrozen.providers.context import context_accounting_messages
 from openkyrozen.providers.retry import provider_request_scope, bounded_call, bounded_stream
@@ -93,7 +95,8 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
 
 
 def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None,
-                        history_tool_names=(), stream: bool = False, on_event=None) -> ModelResponse:
+                        history_tool_names=(), stream: bool = False, on_event=None,
+                        _native_tool_phase: str | None = None) -> ModelResponse:
     """Receive the full response under existing deadline, usage and context scopes."""
     provider = self.execution_context.provider or self.llm_provider
     tools = None
@@ -108,17 +111,171 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         if any(not isinstance(name, str) or not name for name in history_names):
             raise TypeError("history_tool_names must contain nonempty tool names")
         names = set(history_names)
+        requested_names = set()
         for requested in tool_names:
             canonical = registry.resolve_legacy_name(requested)
             if canonical in registry.specs:
                 names.add(canonical)
+                requested_names.add(canonical)
         tools = [item for item in registry.provider_schemas(names=names)
                  if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
+        current_names = {item["name"] for item in tools if item["name"] in requested_names
+                         and registry.get_spec(item["name"]).capability in allowed}
+        ordinary_plan_edit = False
+        ordinary_followup = False
+        if "update_plan" in current_names and registry.get_spec("update_plan").source == "builtin":
+            plan_tool = next(item for item in tools if item["name"] == "update_plan")
+            schema = plan_tool["parameters"]
+            plan = getattr(getattr(self, "tasks", None), "working_plan", None)
+            interaction = self._interaction_controller.state() if plan and plan.status in {"active", "completed"} else {}
+            accepted = interaction.get("executing_plan")
+            ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != plan.id
+            ordinary_followup = (_native_tool_phase == "plan_completed" and not accepted
+                                 and not interaction.get("pending_plan"))
+            for shape in (schema, *schema.get("anyOf", ())):
+                operations = shape.get("properties", {}).get("operations")
+                if operations is None:
+                    continue
+                variants = operations["items"]["anyOf"]
+                if ordinary_plan_edit:
+                    for operation in variants:
+                        operation["properties"].pop("anchor", None)
+                else:
+                    operations["items"]["anyOf"] = [item for item in variants
+                        if item["properties"]["op"]["enum"] != ["add_read_check"]]
+            if _native_tool_phase == "plan_required":
+                operations = schema["properties"]["operations"]
+                creation_ops = [item for item in operations["items"]["anyOf"]
+                                if item["properties"]["op"]["enum"][0] in {"add", "add_read_check", "start"}]
+                plan_tool["parameters"] = {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["expected_revision", "operations"],
+                    "properties": {
+                        "expected_revision": {"type": "integer", "minimum": 0, "maximum": 0},
+                        "operations": {**operations, "minItems": 1, "items": {"anyOf": creation_ops}},
+                    },
+                }
+                plan_tool["description"] = (
+                    "Create the required Working Plan at revision zero. For inspection of unknown file contents, "
+                    "use add_read_check with ref and path. Use add with a task and acceptance for other work, "
+                    "including pending edits and tests. In the same call, start the first task by its ref."
+                )
+            elif _native_tool_phase in {"plan_active", "plan_completed"}:
+                required = ["plan_id", "expected_revision", "operations"]
+                properties = {name: schema["properties"][name] for name in required}
+                properties["plan_id"] = {
+                    **properties["plan_id"], "description": "ID from the current pinned Working Plan.",
+                }
+                properties["operations"] = {**properties["operations"], "minItems": 1}
+                if _native_tool_phase == "plan_active":
+                    properties["reason"] = {"type": "string", "minLength": 1,
+                                            "description": "Optional rationale for the plan edit."}
+                    criterion_guidance = (
+                        "For a pending task with only prose acceptance and no execution contract, use update "
+                        "to set typed acceptance before start in the same call. For a typed check of an expected failure, "
+                        "bind a run_cmd check that exits zero only when the expected failure is observed. "
+                        if ordinary_plan_edit else "Preserve approved criteria and request renewed approval for material changes. "
+                    )
+                    plan_tool["description"] = (
+                        "Revise the current Working Plan using its pinned ID and revision. "
+                        f"{criterion_guidance}Use exact tool arguments for typed verification. "
+                        "Combine compatible operations in execution order."
+                    )
+                else:
+                    operations = properties["operations"]
+                    variants = operations["items"]["anyOf"]
+                    confirm = next(item for item in variants
+                                   if item["properties"]["op"]["enum"] == ["suggest_complete"])
+                    properties["operations"] = {**operations, "items": confirm}
+                    plan_tool["description"] = (
+                        "Confirm previously verified tasks in the completed Working Plan. "
+                        "Use the current pinned plan ID and revision and suggest_complete with the verified task IDs."
+                    )
+                    if ordinary_followup:
+                        required.remove("plan_id")
+                        properties["operations"]["items"] = {"anyOf": [
+                            item for item in variants
+                            if item["properties"]["op"]["enum"][0] in {"add", "add_read_check", "start", "suggest_complete"}
+                        ]}
+                        plan_tool["description"] += (
+                            " If work from the original request remains, create a separate Working Plan. "
+                            "Omit plan_id, set expected_revision to 0, add tasks for the remaining work, "
+                            "and start the first task by its ref."
+                        )
+                plan_tool["parameters"] = {
+                    "type": "object", "additionalProperties": False, "required": required, "properties": properties,
+                }
+        history_only = {item["name"] for item in tools} - current_names
+        marker = "## Current native tool availability\n"
+        previous = list(messages)
+        messages[:] = [item for item in messages if not (
+            isinstance(item, dict) and item.get("role") == "system"
+            and str(item.get("content", "")).startswith(marker)
+        )]
+        phase_guidance = {
+            "plan_required": "Planning-required exposure is temporary. Call update_plan to create and start a task "
+                             "before using workspace tools such as read_file or Git history. Check current_call_tools "
+                             "again once active. Use read_tool_artifact only with a "
+                             "runtime-provided artifact_id. It does not open workspace files. ",
+            "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
+                           "for the selected task's next action. The plan becomes read-only when the last task finishes. ",
+            "plan_completed": "The final tool reply may already have verified the last task. "
+                              "If the original request is fulfilled, answer using the verified results. "
+                              "If explicitly asked to confirm the plan, use update_plan with the current IDs and revision. ",
+        }.get(_native_tool_phase, "")
+        if ordinary_followup:
+            phase_guidance += ("If the completed tasks covered only part of the original request, use update_plan "
+                               "at revision 0 with no plan_id to create and start a fresh plan for the remaining work. ")
+            from openkyrozen.agent.engine import _followup_workspace_tools
+            followup_tools = _followup_workspace_tools(self)
+            if followup_tools:
+                phase_guidance += ("These tools can become available after starting a fresh plan: "
+                                   + ", ".join(followup_tools) + ". Existing permission and approval checks apply. ")
+        if _native_tool_phase == "plan_active" and ordinary_plan_edit:
+            phase_guidance += "Add discovered work within scope before the final verification. "
+        if _native_tool_phase == "plan_active" and "discover_tools" in current_names:
+            phase_guidance += "Use discover_tools if a permitted tool is missing from the compact list. "
+        can_propose_revision = _native_tool_phase == "plan_completed" and "propose_plan" in current_names
+        if can_propose_revision:
+            phase_guidance = ("The Working Plan is complete. Use update_plan only to confirm completed work, "
+                              "or propose_plan to stage a material revision for renewed approval. "
+                              "Otherwise, answer the original request using the verified results. ")
+        after_replies = (
+            ((_native_tool_phase == "plan_active" and self.tasks.execution_task_id is not None)
+             or _native_tool_phase == "plan_completed")
+            and messages
+            and isinstance(messages[-1], ToolReply)
+        )
+        position = len(messages) if after_replies else min(1, len(messages))
+        messages.insert(position, {"role": "system", "content": marker + json.dumps({
+            "current_call_tools": sorted(current_names), "history_only_declarations": sorted(history_only),
+        }, sort_keys=True) + "\nThis current list supersedes earlier request lists. " + phase_guidance
+            + "Current schemas define argument contracts. History-only declarations do not grant execution permission; "
+              "they retain earlier tool-call correlation. Runtime workspace, capability, approval and plan checks still apply."})
+        from openkyrozen.agent.context import _update_context_history_projection
+        _update_context_history_projection(self, messages, previous)
     self._last_prompt_tokens = self._last_completion_tokens = 0
     self._last_response_is_native.set(False)
     self._last_model_response.set(None)
     self._turn_failed.set(False)
     selected_model = model or self.DEEPSEEK_MODEL
+    state = self._active_context_state.get()
+    if state is not None and not self._in_context_compaction.get():
+        from openkyrozen.providers.models import provider_identity
+        state.request_provider_id = provider_identity(provider)
+        state.request_model = selected_model
+        if tool_names is None:
+            state.native_input_overhead_tokens = 0
+            state.native_schema_fingerprint = ""
+    if tool_names is not None and not self._in_context_compaction.get():
+        if state is not None:
+            from openkyrozen.agent.compaction import _text_tokens
+            project = getattr(provider, "_tool_wire_projector", None)
+            wire_tools = project(tools) if project is not None else tools
+            schema_json = json.dumps(wire_tools, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            state.native_input_overhead_tokens = _text_tokens(schema_json) + 32 * len(tools or ()) + 64
+            state.native_schema_fingerprint = hashlib.sha256(schema_json.encode("utf-8")).hexdigest()
+        self._prepare_context_for_call(messages, selected_model)
     if self._active_context_state.get() is not None and not self._in_context_compaction.get():
         self._record_context_history_metrics(messages)
     request_id = f"model_{uuid.uuid4().hex}"
@@ -171,7 +328,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                      workspace_id=self.memory_bank.workspace_id, session_id=self.memory_bank.session_id,
                      run_id=self._active_usage_run_id.get(), surface=self._EXECUTION_SURFACE,
                      delegation_budget=delegation_budget,
-                     delegation_budget_run_id=delegation_budget_run_id):
+                     delegation_budget_run_id=delegation_budget_run_id) as ledger:
         try:
             if provider is None:
                 raise ProviderUnavailableError(self.PROVIDER_UNAVAILABLE_MESSAGE)
@@ -195,9 +352,10 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "response": model_response_to_dict(response),
                 }, request_id=request_id)
         except Exception as exc:
-            from openkyrozen.providers.usage import _track_cost
-            _track_cost(getattr(provider, "name", "unknown"), None, model=selected_model,
-                        completion_state="failed")
+            if not (isinstance(exc, ProviderContractError) and exc.malformed_tool_json and ledger.attempt_recorded):
+                from openkyrozen.providers.usage import _track_cost
+                _track_cost(getattr(provider, "name", "unknown"), None, model=selected_model,
+                            completion_state="failed")
             self._turn_failed.set(True)
             self._publish_runtime_event("model.failed", {
                 "error_type": type(exc).__name__,

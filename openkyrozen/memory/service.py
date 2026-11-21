@@ -27,7 +27,8 @@ class MemoryBank:
 
     def __init__(self, path: str | os.PathLike[str] | None = None, *, user_id: str = "local",
                  workspace_id: str = "default", session_id: str | None = None,
-                 file_scope_id: str | None = None, store: MemoryStore, index: VectorIndex | None = None):
+                 file_scope_id: str | None = None, store: MemoryStore, index: VectorIndex | None = None,
+                 owns_store: bool = False):
         self._lock = threading.RLock()
         self.user_id = user_id
         self.workspace_id = workspace_id
@@ -37,6 +38,8 @@ class MemoryBank:
         self.session_id = session_id
         self.db_path = Path(path or store.path)
         self.store = store
+        self._owns_store = owns_store
+        self._owns_index = index is not None
         self._collection = index.memories if index is not None else None
         self._files_collection = index.files if index is not None else None
         self._client = index
@@ -45,11 +48,24 @@ class MemoryBank:
         """Share application storage/index while owning independent scope and locks."""
         view = copy.copy(self)
         view._lock = threading.RLock()
+        view._owns_store = view._owns_index = False
         view.user_id = self.user_id if user_id is None else user_id
         view.workspace_id = self.workspace_id if workspace_id is None else workspace_id
         view.session_id = session_id
         view.file_scope_id = self.file_scope_id if file_scope_id is None else file_scope_id
         return view
+
+    def close(self) -> None:
+        try:
+            if self._owns_index:
+                close = getattr(self._client, "close", None)
+                if close is not None:
+                    close()
+                self._owns_index = False
+        finally:
+            if self._owns_store:
+                self.store.close()
+                self._owns_store = False
 
     @staticmethod
     def _kind_for_text(text: str) -> str:

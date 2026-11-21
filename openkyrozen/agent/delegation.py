@@ -612,9 +612,10 @@ class Delegation:
                 self._schedule()
 
     def _verify_read_only_result(self, run, worker_report, result):
+        from openkyrozen.agent.subagent_runtime import _receipt_argument
+
         if worker_report["status"] != "completed" or worker_report["artifacts"]:
             return False
-        receipts = [item for item in result.get("tool_records", []) if item.get("success")]
         scopes = [(self.root / value).resolve() for value in run["assignment"]["scope"]]
         def in_scope(raw):
             try:
@@ -623,13 +624,17 @@ class Delegation:
                 return any(path == scope or path.is_relative_to(scope) for scope in scopes)
             except (OSError, TypeError, ValueError):
                 return False
-        inspected = {item.get("receipt_id") for item in receipts if item.get("action") == "read_file"
-                     and in_scope((item.get("args") or {}).get("path") if isinstance(item.get("args"), dict) else
-                                  str(item.get("args", "")).split("|", 1)[0])}
+        inspected = {
+            item["receipt_id"] for item in result.get("tool_records", [])
+            if item.get("success") is True and item.get("action") == "read_file"
+            and isinstance(item.get("receipt_id"), str) and item["receipt_id"]
+            and in_scope(_receipt_argument(item.get("args"), "path"))
+        }
         evidence = worker_report["evidence"]
         if not inspected or not evidence or not worker_report.get("checks"):
             return False
-        return all(isinstance(item, dict) and item.get("receipt_id") in inspected for item in evidence)
+        return all(isinstance(item, dict) and isinstance(item.get("receipt_id"), str)
+                   and item["receipt_id"] in inspected for item in evidence)
 
     def _inspect_artifacts(self, run, review_result):
         findings, checks = [], []
@@ -700,10 +705,17 @@ class Delegation:
                                   if review.get("session_id"))
             for child_session in child_sessions:
                 from .conversation import ConversationHistory
-                child_messages = ConversationHistory(
+                history = ConversationHistory(
                     self.memory.store, user_id=self.memory.user_id,
-                    workspace_id=self.memory.file_scope_id, session_id=child_session,
-                ).display_messages()
+                    workspace_id=self.runs[run_id].get("conversation_workspace_id", self.memory.file_scope_id),
+                    session_id=child_session,
+                )
+                if "conversation_workspace_id" not in self.runs[run_id] and history.head is None:
+                    history = ConversationHistory(
+                        self.memory.store, user_id=self.memory.user_id,
+                        workspace_id=self.memory.workspace_id, session_id=child_session,
+                    )
+                child_messages = history.display_messages()
                 if child_session in {run_id, self.runs[run_id].get("budget_id", run_id)}:
                     messages = child_messages
                 else:

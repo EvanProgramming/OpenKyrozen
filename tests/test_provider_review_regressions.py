@@ -1,4 +1,5 @@
 """Reproductions of verified GitHub review findings for V3 issue #231."""
+from contextlib import ExitStack, closing
 import threading
 import time
 import unittest
@@ -188,8 +189,8 @@ class GitHubReviewRegressions(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from openkyrozen.app.bootstrap import build_application, build_memory
-        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}):
-            app=build_application(memory=build_memory(Path(directory)/'state.sqlite3'))
+        with tempfile.TemporaryDirectory() as directory, patch.dict('os.environ',{'KYROZEN_DISABLE_VECTOR_INDEX':'1'}), ExitStack() as sqlite_owners:
+            app=build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory)/'state.sqlite3'))))
             app.runtime.llm_provider=NS(chat=lambda *args:('[Ollama Error] maximum context length exceeded',None))
             try:
                 with self.assertRaises(ProviderError) as caught:

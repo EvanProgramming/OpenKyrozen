@@ -1,6 +1,7 @@
 """Repository operations consumed by HistoryStore."""
 from __future__ import annotations
 from typing import Protocol, Any
+from pathlib import Path
 from dataclasses import dataclass
 
 class HistoryError(RuntimeError):
@@ -14,6 +15,7 @@ class TurnToken:
 
 
 class HistoryStore(Protocol):
+    path: Path
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         ...
     def history_head(self, *, user_id: str='local', workspace_id: str='default', session_id: str):

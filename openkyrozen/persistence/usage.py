@@ -115,6 +115,7 @@ class UsageRepository:
                 "SUM(COALESCE(completion_tokens, 0)) AS completion_tokens, "
                 "SUM(COALESCE(cost_picos, 0)) AS cost_picos "
                 f"FROM usage_attempts WHERE {' AND '.join(clauses)} "
+                "AND cost_picos IS NOT NULL "
                 "GROUP BY provider, pricing_snapshot",
                 params,
             ).fetchall()
@@ -163,7 +164,7 @@ class UsageRepository:
         return {
             **totals, "currency": "USD",
             "providers": [dict(provider=row["provider"], **{
-                **normalise(row), "cost_picos": exact_cost(provider_groups[row["provider"]]),
+                **normalise(row), "cost_picos": exact_cost(provider_groups.get(row["provider"], [])),
             }) for row in by_provider],
         }
 

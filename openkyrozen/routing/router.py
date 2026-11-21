@@ -8,6 +8,12 @@ from openkyrozen.providers import ProviderConfig, model_for_complexity, resolve_
 from openkyrozen.tasks.models import requires_working_plan
 
 
+_MULTI_STEP_RE = re.compile(
+    r"\b(?:then|after that|step[- ]by[- ]step|step\s*\d+)\b|"
+    r"(?:^|[.!?;:,])\s*(?:first|next|finally)\b"
+)
+
+
 @dataclass(frozen=True)
 class RoutingDecision:
     provider: str
@@ -79,7 +85,7 @@ def _select_model(self, user_input: str) -> str:
         complexity_score += 1
 
     # Multi-step / numbered instructions (English)
-    if re.search(r"\b(step|first|then|next|finally|after that)\b", text):
+    if _MULTI_STEP_RE.search(text):
         complexity_score += 2
     # CJK multi-step indicators
     _cjk_step_markers = ["第一步", "第二步", "首先", "然后", "接着", "最后", "最終",
@@ -91,17 +97,16 @@ def _select_model(self, user_input: str) -> str:
 
     # Code-related tasks (English)
     code_keywords = [
-        "code", "debug", "fix", "refactor", "implement", "build a",
-        "write a program", "write a script", "function", "class",
-        "architecture", "design pattern", "optimize", "performance",
+        "debug", "fix", "refactor", "implement", "build a",
+        "write a program", "write a script", "optimize",
         "bug", "error", "traceback", "exception", "crash", "broken",
         "doesn't work", "not working", "fails", "failing"
     ]
     if any(kw in text for kw in code_keywords):
-        complexity_score += 3  # code tasks are inherently complex
+        complexity_score += 3
     # CJK code-related tasks
-    _cjk_code_keywords = ["代码", "调试", "修复", "重构", "实现", "写一个程序",
-                           "写脚本", "函数", "架构", "优化", "性能", "编程",
+    _cjk_code_keywords = ["调试", "修复", "重构", "实现", "写一个程序",
+                           "写脚本", "优化", "编程",
                            "bug", "报错", "错误", "出错了", "崩溃", "不行"]
     if any(kw in user_input for kw in _cjk_code_keywords):
         complexity_score += 3
@@ -150,13 +155,31 @@ def _select_model(self, user_input: str) -> str:
     if config.provider == "ollama":
         simple, complex_model = resolve_ollama_models(config)
         config.model_simple, config.model_complex = simple, complex_model
-    return model_for_complexity(config, complexity_score >= 3)
+    return model_for_complexity(config, complexity_score >= 3 or _classify_complexity(self, user_input) == "complex")
 
 
 def _classify_complexity(self, user_input: str) -> str:
     """Classify the user request as simple, medium, or complex.
     Returns 'simple', 'medium', or 'complex'."""
     text = user_input.lower().strip()
+
+    # Task signals take precedence over a greeting or question prefix.
+    complex_indicators = [
+        r"\d+[.)]\s+\w",
+        r"\b(implement|refactor|migrate|audit|comprehensive)\b",
+        r"\b(write\s+(a|the)\s+(program|script|app|application|function|class))\b",
+        r"\b(analy[sz]e\s+(the|this|my|our)\s+(codebase|repo|project|architecture))\b",
+        r"\b(debug|fix\s+(the|this|a|my)\s+(bug|error|issue|problem|crash))\b",
+        r"\b(git\s+(merge|rebase|cherry-pick|bisect))\b",
+    ]
+    if _MULTI_STEP_RE.search(text) or any(re.search(p, text) for p in complex_indicators):
+        return "complex"
+    _cjk_complex = ["实现", "重构", "迁移", "审计", "审查代码", "写一个程序", "写脚本",
+                     "分析代码", "分析架构", "第一步", "第二步", "全面的",
+                     "调试", "修复bug", "修bug", "出错了", "报错", "错误",
+                     "git操作", "git合并", "提交代码", "推送", "拉取"]
+    if any(ind in user_input for ind in _cjk_complex):
+        return "complex"
 
     # Simple: short greetings, trivial questions, single actions (English)
     simple_patterns = [
@@ -177,6 +200,9 @@ def _classify_complexity(self, user_input: str) -> str:
     if any(re.search(p, user_input) for p in _cjk_simple_patterns):
         return "simple"
 
+    if re.search(r"\b(traceback|stack\s*trace|exception|typeerror|valueerror|attributeerror)\b", text):
+        return "complex"
+
     # Short inputs without tool verbs are simple (CJK-aware)
     _tool_verbs = {"read","list","find","search","write","run","create","clone","fetch","open","edit","delete","move","copy"}
     _cjk_tool_verbs = {"读","读取","查","查找","搜索","写","运行","创建","克隆","获取","编辑","删除","移动","复制","列出","安装","读文件","写文件","搜索网页","执行"}
@@ -189,26 +215,6 @@ def _classify_complexity(self, user_input: str) -> str:
         if len(user_input.split()) <= 3 and not (words & _tool_verbs):
             return "simple"
 
-    # Complex: multi-step, code generation, deep analysis, bug fixing, git operations
-    complex_indicators = [
-        r"\b(step|first|then|next|finally|after that)\b",
-        r"\d+[.)]\s+\w",  # numbered steps
-        r"\b(implement|refactor|migrate|audit|comprehensive)\b",
-        r"\b(write\s+(a|the)\s+(program|script|app|application|function|class))\b",
-        r"\b(analy[sz]e\s+(the|this|my|our)\s+(codebase|repo|project|architecture))\b",
-        r"\b(debug|fix\s+(the|this|a|my)\s+(bug|error|issue|problem|crash))\b",
-        r"\b(traceback|stack\s*trace|exception|TypeError|ValueError|AttributeError)\b",
-        r"\b(git\s+(merge|rebase|cherry-pick|bisect))\b",
-    ]
-    if any(re.search(p, text) for p in complex_indicators):
-        return "complex"
-    # CJK complex indicators
-    _cjk_complex = ["实现", "重构", "迁移", "审计", "审查代码", "写一个程序", "写脚本",
-                     "分析代码", "分析架构", "第一步", "第二步", "全面的",
-                     "调试", "修复bug", "修bug", "出错了", "报错", "错误",
-                     "git操作", "git合并", "提交代码", "推送", "拉取"]
-    if any(ind in user_input for ind in _cjk_complex):
-        return "complex"
     # Long inputs with multiple sentences suggest complexity
     if len(user_input) > 250:
         return "complex"
