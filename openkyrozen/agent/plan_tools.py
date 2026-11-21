@@ -69,7 +69,9 @@ def _update_plan(self, arguments: dict):
     task.id identifies an existing runtime task, never a new client-chosen ID.
     Do not mix tasks with operations, plan_id, expected_revision or reason.
     Use returned plan_id/revision for edits and add.ref for same-batch references.
-    Read acceptance can use criterion/verification objects: verification names
+    In ordinary plans, add_read_check with ref and path creates a task for a
+    complete read. Start it by ref before reading. Read acceptance can also
+    use criterion/verification objects: verification names
     read_file, exact arguments and expect={equals:content} or {contains:text}.
     In ordinary plans, use expect={complete:true} with the exact path to observe
     unknown contents. This criterion requires a complete native file read after
@@ -123,7 +125,7 @@ def _update_plan(self, arguments: dict):
                 return tool_failure("permission_denied",
                                     "A Strategic Plan is active or awaiting approval. Use its approval workflow.")
             if self.execution_context.native_plan_completed:
-                actions = {op["op"] for op in operations or ()}
+                actions = {"add" if op["op"] == "add_read_check" else op["op"] for op in operations or ()}
                 if actions != {"add", "start"}:
                     raise ValueError("A follow-up plan requires add and start operations in the same call")
         if operations is not None:

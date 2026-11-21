@@ -498,7 +498,8 @@ class TaskManager:
             return task_id
 
         allowed_by_op = {
-            "add": {"op", "ref", "task"}, "update": {"op", "task", "fields"},
+            "add": {"op", "ref", "task"}, "add_read_check": {"op", "ref", "path"},
+            "update": {"op", "task", "fields"},
             "cancel": {"op", "task"}, "reorder": {"op", "tasks"},
             "add_dependency": {"op", "task", "depends_on"},
             "remove_dependency": {"op", "task", "depends_on"},
@@ -507,7 +508,8 @@ class TaskManager:
             "block": {"op", "task", "reason"}, "unblock": {"op", "task", "reason"},
             "start": {"op", "task"}, "suggest_complete": {"op", "task"},
         }
-        if saved is None and not any(isinstance(item, dict) and item.get("op") == "add" for item in operations):
+        if saved is None and not any(isinstance(item, dict) and item.get("op") in ("add", "add_read_check")
+                                     for item in operations):
             raise ValueError("a new Working Plan requires at least one add operation")
         has_edits = any(isinstance(operation, dict) and operation.get("op") != "suggest_complete"
                         for operation in operations)
@@ -518,6 +520,15 @@ class TaskManager:
             if set(operation) != allowed_by_op[kind] and not (
                     kind == "add" and set(operation) == allowed_by_op[kind] | {"anchor"}):
                 raise ValueError(f"{kind} operation has missing or unsupported fields")
+            if kind == "add_read_check":
+                path = operation["path"]
+                description = f"Read {path} completely"
+                operation = {"op": "add", "ref": operation["ref"], "task": {
+                    "description": description, "acceptance": [{"criterion": description, "verification": {
+                        "action": "read_file", "arguments": {"path": path}, "expect": {"complete": True},
+                    }}],
+                }}
+                kind = "add"
             if kind == "add":
                 if "anchor" in operation:
                     if not has_strategic_tasks:

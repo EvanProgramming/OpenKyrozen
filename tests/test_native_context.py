@@ -299,12 +299,9 @@ class NativeContextTests(unittest.TestCase):
                     if step == 1:
                         pinned = next(message["content"] for message in messages if isinstance(message, dict)
                                       and message.get("content", "").startswith("## Pinned Working Plan state\n"))
-                        self.assertIn('"expect":{"complete":true}', pinned)
+                        self.assertIn('"op":"add_read_check"', pinned)
                         call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
-                            {"op": "add", "ref": "inspect", "task": {"description": "Read the defaults",
-                                "acceptance": [{"criterion": "Read the complete defaults file", "verification": {
-                                    "action": "read_file", "arguments": {"path": "notes.txt"},
-                                    "expect": {"complete": True}}}]}},
+                            {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
                             {"op": "start", "task": "inspect"}]})
                     elif step == 2:
                         reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "plan")

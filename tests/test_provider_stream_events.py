@@ -564,6 +564,11 @@ class StreamEventContractTests(unittest.TestCase):
                 if case not in {"matched", "initial fragment"}:
                     self.assertIsInstance(events[-1], ResponseError)
                     self.assertFalse(any(isinstance(event, ResponseComplete) for event in events))
+                    if case == "invalid":
+                        wire = events[-1].error.wire_evidence
+                        self.assertEqual(wire["json_error"], "Expecting value")
+                        self.assertEqual(wire["declared_tool"], "read_file")
+                        self.assertNotIn('{"path":', repr(wire))
                     if case == "second call invalid":
                         self.assertTrue(events[-1].error.malformed_tool_json)
                         self.assertEqual(len(events[-1].error.wire_evidence["terminal"]), 2)

@@ -361,7 +361,7 @@ def strict_chat_tools(tools):
         if is_plan and _plan_accepts_add(tool["parameters"]):
             description += (" For a new verification task with only a command and no dependencies, use "
                             "add_command_check with ref, description and the exact command. Start the pending "
-                            "task once no other task is running, then run the command. Use add for other task definitions.")
+                            "task once no other task is running, then run the command.")
         result.append({"type": "function", "function": {
             **tool, "description": description, "strict": True, "parameters":
             strict_chat_schema(schema, remaining=remaining, compact_plan_arguments=is_plan),

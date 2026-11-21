@@ -72,6 +72,21 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         return self.runtime.execute_call(self.runtime.current_session,
             ToolCall(call_id, "read_file", {"path": path}), task_id=task_id)
 
+    def test_compact_read_check_requires_bound_complete_read(self):
+        result = self.invoke({"expected_revision": 0, "operations": [
+            {"op": "add_read_check", "ref": "inspect", "path": "catalog.py"},
+            {"op": "start", "task": "inspect"},
+        ]})
+        self.assertTrue(result.success, result.text)
+        task = self.runtime.tasks.tasks[0]
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["acceptance"][0]["expect"], {"complete": True})
+        (self.root / "different.py").write_text(self.content)
+        self.assertTrue(self.read("different", "different.py").success)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "running")
+        self.assertTrue(self.read("exact", "catalog.py").success)
+        self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
+
     def test_pinned_plan_contracts_can_be_copied_into_a_native_edit(self):
         task = self.task()
         task["execution"] = {"action": "read_file", "arguments": {"path": "catalog.py"}}
@@ -765,7 +780,8 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(set(creation["properties"]), {"expected_revision", "operations"})
                     case.assertEqual(set(creation["required"]), set(creation["properties"]))
                     operations = creation["properties"]["operations"]["items"]["anyOf"]
-                    case.assertEqual([op["properties"]["op"]["enum"] for op in operations], [["add"], ["start"]])
+                    case.assertEqual([op["properties"]["op"]["enum"] for op in operations],
+                                     [["add"], ["add_read_check"], ["start"]])
                     case.assertNotIn("op:add", plan_tool["description"])
                     case.assertNotIn("plan_id", plan_tool["description"])
                     pinned = next(item["content"] for item in messages if isinstance(item, dict)
@@ -840,7 +856,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(set(plan_schema["required"]), {"expected_revision", "operations"})
                     operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
                     case.assertEqual([op["properties"]["op"]["enum"] for op in operations],
-                                     [["add"], ["start"], ["suggest_complete"]])
+                                     [["add"], ["add_read_check"], ["start"], ["suggest_complete"]])
                     read = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "read")
                     case.assertEqual(read.output["working_plan_progress"], {
                         "plan_id": state["plan_id"], "revision": state["revision"],

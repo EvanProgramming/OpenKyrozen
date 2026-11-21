@@ -132,15 +132,21 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != plan.id
             ordinary_followup = (_native_tool_phase == "plan_completed" and not accepted
                                  and not interaction.get("pending_plan"))
-            if ordinary_plan_edit:
-                for shape in (schema, *schema.get("anyOf", ())):
-                    operations = shape.get("properties", {}).get("operations", {})
-                    for operation in operations.get("items", {}).get("anyOf", ()):
+            for shape in (schema, *schema.get("anyOf", ())):
+                operations = shape.get("properties", {}).get("operations")
+                if operations is None:
+                    continue
+                variants = operations["items"]["anyOf"]
+                if ordinary_plan_edit:
+                    for operation in variants:
                         operation["properties"].pop("anchor", None)
+                else:
+                    operations["items"]["anyOf"] = [item for item in variants
+                        if item["properties"]["op"]["enum"] != ["add_read_check"]]
             if _native_tool_phase == "plan_required":
                 operations = schema["properties"]["operations"]
                 creation_ops = [item for item in operations["items"]["anyOf"]
-                                if item["properties"]["op"]["enum"][0] in {"add", "start"}]
+                                if item["properties"]["op"]["enum"][0] in {"add", "add_read_check", "start"}]
                 plan_tool["parameters"] = {
                     "type": "object", "additionalProperties": False,
                     "required": ["expected_revision", "operations"],
@@ -150,11 +156,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     },
                 }
                 plan_tool["description"] = (
-                    "Create the required Working Plan at revision zero. Use add operations with a unique ref "
-                    "and a task with a description and acceptance criteria. In the same call, use start "
-                    "with the first task's ref as its task value. Include all requested work, including pending "
-                    "edits and tests. For unknown file contents, use complete-read verification of the exact path. "
-                    "Use a content predicate when the expected result is known."
+                    "Create the required Working Plan at revision zero. For inspection of unknown file contents, "
+                    "use add_read_check with ref and path. Use add with a task and acceptance for other work, "
+                    "including pending edits and tests. In the same call, start the first task by its ref."
                 )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
                 required = ["plan_id", "expected_revision", "operations"]
@@ -191,7 +195,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         required.remove("plan_id")
                         properties["operations"]["items"] = {"anyOf": [
                             item for item in variants
-                            if item["properties"]["op"]["enum"][0] in {"add", "start", "suggest_complete"}
+                            if item["properties"]["op"]["enum"][0] in {"add", "add_read_check", "start", "suggest_complete"}
                         ]}
                         plan_tool["description"] += (
                             " If work from the original request remains, create a separate Working Plan. "

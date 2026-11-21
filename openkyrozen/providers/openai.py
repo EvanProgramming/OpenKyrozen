@@ -561,6 +561,17 @@ class OpenAIResponsesProvider(LLMProvider):
                     if isinstance(cause, json.JSONDecodeError):
                         exc.wire_evidence["byte_offset"] = len(
                             cause.doc[:cause.pos].encode("utf-8", errors="surrogatepass"))
+                        exc.wire_evidence["json_error"] = cause.msg if cause.msg in {
+                            "Expecting value", "Expecting property name enclosed in double quotes",
+                            "Expecting ':' delimiter", "Expecting ',' delimiter", "Extra data",
+                            "Unterminated string starting at", "Invalid control character at",
+                            r"Invalid \escape", r"Invalid \uXXXX escape",
+                        } else "Invalid JSON"
+                        failed = [getattr(item, "name", None) for item in output
+                                  if getattr(item, "type", None) == "function_call"
+                                  and getattr(item, "arguments", None) == cause.doc]
+                        if len(failed) == 1 and any(tool["name"] == failed[0] for tool in tools or ()):
+                            exc.wire_evidence["declared_tool"] = failed[0]
                     raise
             continuation = _snapshot_from_sdk(output)
             for index, arguments in copies.items():

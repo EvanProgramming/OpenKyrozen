@@ -358,9 +358,9 @@ def _refresh_working_plan_context(self, messages: list) -> None:
                 "Define tool-backed acceptance before starting work. For example, for a known marker in a file: "
                 '{"criterion":"Read the expected marker","verification":{"action":"read_file",'
                 '"arguments":{"path":"notes.txt"},"expect":{"contains":"ready"}}}. '
-                "When a task needs to discover unknown contents, bind acceptance to a complete read of the exact path: "
-                '{"criterion":"Read the defaults file","verification":{"action":"read_file",'
-                '"arguments":{"path":"settings.py"},"expect":{"complete":true}}}. '
+                "To inspect a file with unknown contents, use "
+                '{"op":"add_read_check","ref":"inspect","path":"settings.py"} '
+                "and start that ref before reading. "
                 "Run the declared verification with matching arguments on the selected task. "
                 f"{test_command_guidance}"
                 "Prose acceptance and unrelated tool results do not certify completion.\n"
