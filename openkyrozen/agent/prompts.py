@@ -305,17 +305,27 @@ def _refresh_working_plan_context(self, messages: list) -> None:
     """Keep a bounded current plan projection outside evictable conversation history."""
     import json
 
-    def criterion_for_prompt(criterion):
-        if not isinstance(criterion, dict) or "args" not in criterion:
-            return criterion
+    def contract_for_prompt(fields):
+        action = fields.get("action")
+        if not action:
+            return None
         try:
-            arguments = json.loads(criterion["args"])
+            arguments = json.loads(fields.get("args"))
         except (TypeError, ValueError, RecursionError):
+            return None
+        if isinstance(arguments, dict):
+            return {"action": action, "arguments": arguments}
+        return None
+
+    def criterion_for_prompt(criterion):
+        if not isinstance(criterion, dict):
             return criterion
-        if not isinstance(arguments, dict):
+        verification = contract_for_prompt(criterion)
+        if verification is None or not isinstance(criterion.get("criterion"), str):
             return criterion
-        return {**{key: value for key, value in criterion.items() if key != "args"},
-                "arguments": arguments}
+        if "expect" in criterion:
+            verification["expect"] = criterion["expect"]
+        return {"criterion": criterion["criterion"], "verification": verification}
 
     test_command_guidance = (
         "Leave the test command open until inspection identifies the runner. "
@@ -367,13 +377,18 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         # A completed plan still supplies identity for readonly confirmation; never revive cached history.
         state["tasks"] = [{"id": task["id"], "description": str(task.get("description", "")),
                            "status": task["status"]} for task in completed_tasks]
-    state["tasks"] = [{
-        **item, "dependencies": tasks_by_id.get(item["id"], {}).get("dependencies", []),
-        "acceptance": [criterion_for_prompt(criterion)
-                       for criterion in tasks_by_id.get(item["id"], {}).get("acceptance", [])],
-        "execution": {key: (tasks_by_id.get(item["id"], {}).get("checkpoint") or {}).get(key)
-                      for key in ("action", "args")},
-    } for item in state["tasks"]]
+    for index, item in enumerate(state["tasks"]):
+        task = tasks_by_id.get(item["id"], {})
+        checkpoint = task.get("checkpoint") or {}
+        execution = contract_for_prompt(checkpoint)
+        projected = {
+            **item, "dependencies": task.get("dependencies", []),
+            "acceptance": [criterion_for_prompt(criterion) for criterion in task.get("acceptance", [])],
+            "execution": execution,
+        }
+        if execution is None and checkpoint.get("action"):
+            projected["legacy_execution"] = {"action": checkpoint["action"], "args": checkpoint.get("args")}
+        state["tasks"][index] = projected
     full = json.dumps(state, ensure_ascii=False, sort_keys=True)
     if len(full) > 12000:
         memory = self.memory_bank
@@ -398,7 +413,12 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         "Only one task can run at a time. Start the next eligible task before running its verification, "
         "including read-only checks. Tool calls before start cannot verify pending tasks. "
         "Successful matching verification can complete the running task automatically. "
-        "Check the current status before editing and define verification before starting each task. "
+        "Use each task's listed id when editing it and include only the fields you intend to change. "
+        "For ordinary pending tasks, reuse typed acceptance and execution from this pinned state. "
+        "Preserve the approved criteria and execution of Strategic Plan objectives. "
+        "Define verification before starting each task. An ordinary command criterion looks like "
+        '{"criterion":"Tests pass","verification":{"action":"run_cmd","arguments":{"command":"python -m unittest test_example.py"}}}. '
+        "Preserve the test runner's exit status when collecting failure evidence. "
         f"{test_command_guidance}"
     ) + "\n" + full})
     update_projection = getattr(self, "_update_context_history_projection", None)

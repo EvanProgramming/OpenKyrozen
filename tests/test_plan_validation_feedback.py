@@ -72,6 +72,37 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         return self.runtime.execute_call(self.runtime.current_session,
             ToolCall(call_id, "read_file", {"path": path}), task_id=task_id)
 
+    def test_pinned_plan_contracts_can_be_copied_into_a_native_edit(self):
+        task = self.task()
+        task["execution"] = {"action": "read_file", "arguments": {"path": "catalog.py"}}
+        created = self.invoke({"expected_revision": 0, "operations": [
+            {"op": "add", "ref": "inspect", "task": task},
+        ]})
+        self.assertTrue(created.success, created.text)
+        messages = [{"role": "user", "content": "Inspect catalog.py"}]
+        _refresh_working_plan_context(self.runtime, messages)
+        guidance = next(item["content"] for item in messages
+                        if item["content"].startswith("## Pinned Working Plan state\n"))
+        plan = json.loads(guidance.splitlines()[-1])
+        pinned = plan["tasks"][0]
+        copied = {name: pinned[name] for name in ("execution", "acceptance")}
+        reused = self.invoke({"plan_id": plan["plan_id"], "expected_revision": plan["revision"],
+            "operations": [{"op": "update", "task": pinned["id"], "fields": copied}]})
+        self.assertTrue(reused.success, reused.text)
+        self.assertEqual(copied, {name: task[name] for name in copied})
+
+    def test_pinned_plan_retains_legacy_execution_as_descriptive_state(self):
+        created = self.create_read_task()
+        execution = {"action": "read_file", "args": "catalog.py"}
+        self.runtime.tasks.update_checkpoint(created["task_ids"][0], execution)
+        messages = [{"role": "user", "content": "Inspect catalog.py"}]
+        _refresh_working_plan_context(self.runtime, messages)
+        guidance = next(item["content"] for item in messages
+                        if item["content"].startswith("## Pinned Working Plan state\n"))
+        pinned = json.loads(guidance.splitlines()[-1])["tasks"][0]
+        self.assertIsNone(pinned["execution"])
+        self.assertEqual(pinned["legacy_execution"], execution)
+
     def test_captured_mixed_shapes_report_actionable_schema_paths_without_execution(self):
         # Exact first investigation-1 request retained in the d668 snapshot.
         arguments = {"complexity": "simple", "expected_revision": 0, "plan_id": "catalog-read",
@@ -674,7 +705,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     pin = next(item["content"] for item in messages if isinstance(item, dict)
                                and item.get("content", "").startswith("## Pinned Working Plan state\n"))
                     state = json.loads(pin.split("\n", 2)[2])
-                    case.assertEqual(state["tasks"][0]["acceptance"][0]["arguments"], declared)
+                    case.assertEqual(state["tasks"][0]["acceptance"][0]["verification"]["arguments"], declared)
                     case.assertEqual(state["tasks"][0]["status"], "running")
                     call = ToolCall("correct-plan", "update_plan", {"plan_id": state["plan_id"],
                         "expected_revision": state["revision"], "operations": [
