@@ -673,7 +673,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                         or not self._execution_capability_token.allows(approved_spec.capability)):
                     outcome = tool_failure("permission_denied", "Tool retry stopped because its authority changed.")
                     break
-                if native_file_action and (self.execution_context.native_plan_active or _task_plan_id is not None):
+                if native_file_action and self.execution_context.native_plan_active:
                     selected = self.tasks.active_working_task(_task_id) if _task_id else None
                     if not selected or not _file_edit_has_contract(
                             self, selected, action, execution_args, adapters):

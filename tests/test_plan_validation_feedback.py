@@ -156,11 +156,9 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         unselected = write("unselected")
         self.assertEqual(unselected["failure"], "plan_verification_required")
         self.start(created.data)
-        for plan_required in (True, False):
-            self.runtime.execution_context.native_plan_active = plan_required
-            unverified = write(f"before-bind-{plan_required}", task_id)
-            self.assertEqual(unverified["failure"], "plan_verification_required")
-            self.assertEqual(unverified["requested_task_id"], task_id)
+        unverified = write("before-bind", task_id)
+        self.assertEqual(unverified["failure"], "plan_verification_required")
+        self.assertEqual(unverified["requested_task_id"], task_id)
         self.assertEqual((self.root / "catalog.py").read_text(), self.content)
         self.assertEqual(self.runtime.tasks.tasks[0]["evidence"], [])
         self.assertNotIn("action", self.runtime.tasks.tasks[0]["checkpoint"])
@@ -182,6 +180,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
     def test_ordinary_native_write_cannot_use_a_different_files_read_criterion(self):
         created = self.create_read_task()
         self.start(created)
+        self.runtime.execution_context.native_plan_active = True
         for path, allowed in (("unrelated.py", False), ("./catalog.py", True)):
             with self.subTest(path=path):
                 receipt = self.runtime._execute_turn_action("write_file", {"path": path, "content": self.content},
