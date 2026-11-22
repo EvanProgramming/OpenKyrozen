@@ -676,7 +676,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 if native_file_action and (self.execution_context.native_plan_active or _task_plan_id is not None):
                     selected = self.tasks.active_working_task(_task_id) if _task_id else None
                     if not selected or not _file_edit_has_contract(
-                            selected, action, execution_args, adapters):
+                            self, selected, action, execution_args, adapters):
                         plan_write_precondition = True
                         outcome = tool_failure("plan_verification_required",
                             "Select a Working Plan task with typed verification before editing files. "
@@ -723,15 +723,19 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
     return finish(outcome, authorized=not plan_write_precondition, raw_result=raw_result)
 
 
-def _file_edit_has_contract(task, action, arguments, adapters):
+def _file_edit_has_contract(runtime, task, action, arguments, adapters):
     checkpoint = task.get("checkpoint") or {}
     if task["status"] != "running" or not checkpoint.get("native_execution_selected"):
         return False
     if (checkpoint.get("action") == action and (checkpoint.get("declared_execution") or not task.get("evidence"))
             and checkpoint.get("args") == json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))):
         return True
+    allowed = runtime._permitted_tool_names() & {"run_cmd", "read_file"}
     for criterion in task.get("acceptance", ()):
-        if not isinstance(criterion, dict) or criterion.get("action") not in {"run_cmd", "read_file"}:
+        if not isinstance(criterion, dict) or criterion.get("action") not in allowed:
+            continue
+        spec = runtime.tool_registry.specs.get(criterion["action"])
+        if spec is None or not runtime._execution_capability_token.allows(spec.capability):
             continue
         try:
             check = json.loads(criterion["args"])

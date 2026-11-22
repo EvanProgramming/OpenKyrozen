@@ -1089,6 +1089,27 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
         self.assertIn("read_file: operation failed", answer)
         self.assertNotIn("run_cmd: operation failed", answer)
 
+    def test_native_edit_retry_can_complete_after_replacing_a_cancelled_task(self):
+        for old_status, expected in (("cancelled", "completed"), ("succeeded", "incomplete")):
+            with self.subTest(old_status=old_status):
+                runtime = self.runtime(complexity="complex")
+                turn = TurnContext("Edit the file and verify it")
+                runtime._prepare_turn(turn)
+                runtime.tasks.working_plan = SimpleNamespace(id="plan", status="completed", task_ids=["old", "new"])
+                runtime.tasks.tasks = [{"id": "old", "status": old_status}, {"id": "new", "status": "succeeded",
+                    "evidence": [{"success": True, "acceptance": "Verified"}]}]
+                turn.final_answer, turn.response_text, turn.tool_calls = "The edit passed.", "", []
+                effect = {"action": "edit_file", "operation_id": "exact-edit", "plan_id": "plan",
+                          "call_id_source": "native", "side_effects": "filesystem"}
+                turn.tool_records = [
+                    {**effect, "success": False, "requested_task_id": "old",
+                     "verification": {"method": "working_plan_write_precondition"}},
+                    {**effect, "success": True, "authorized": True, "requested_task_id": "new",
+                     "verification": {"status": "unavailable", "file_content_changed": True}},
+                ]
+                answer = runtime._complete_turn(turn)
+                self.assertEqual(turn.runtime_status, expected, answer)
+
     def test_verified_fix_cannot_hide_latest_failed_file_verification(self):
         for stage in ("verified", "explained"):
             with self.subTest(stage=stage):

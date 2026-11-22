@@ -169,6 +169,13 @@ class PlanValidationFeedbackTests(unittest.TestCase):
             "operations": [{"op": "bind_command_check", "task": task_id, "command": "python3 -m unittest"}]})
         self.assertTrue(bound.success, bound.text)
         self.assertEqual(self.runtime.tasks.execution_task_id, task_id)
+        token = self.runtime._execution_capability_token
+        try:
+            self.runtime._execution_capability_token = self.token
+            self.assertEqual(write("shell-unavailable", task_id)["failure"], "plan_verification_required")
+            self.assertEqual((self.root / "catalog.py").read_text(), self.content)
+        finally:
+            self.runtime._execution_capability_token = token
         self.assertTrue(write("verified-task-write", task_id)["success"])
         self.assertEqual((self.root / "catalog.py").read_text(), "updated\n")
 

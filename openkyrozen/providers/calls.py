@@ -142,7 +142,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             )
             from openkyrozen.tasks.engine import can_bind_command_check
             can_bind_command = (
-                _native_tool_phase == "plan_active" and plan is not None and can_add_command and any(
+                _native_tool_phase == "plan_active" and plan is not None and can_add_command
+                and "run_cmd" in current_names and any(
                     task["id"] in plan.task_ids and can_bind_command_check(task) for task in self.tasks.tasks
                 )
             )

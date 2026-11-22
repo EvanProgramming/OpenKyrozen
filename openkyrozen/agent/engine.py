@@ -305,6 +305,9 @@ class AgentEngine:
             needs_plan = planning_required and not cancelled_plan and (plan is None or plan.status != "active")
             native_tool_phase = ("plan_completed" if completed_plan else "plan_required" if needs_plan
                                  else "plan_active" if planning_required and not cancelled_plan else None)
+            if (native_tool_phase is None and turn.interaction_mode == "agent"
+                    and getattr(runtime.tasks, "execution_task_id", None)):
+                native_tool_phase = "plan_active"
             if final_answer_requested:
                 tool_names = set()
                 native_tool_phase = None

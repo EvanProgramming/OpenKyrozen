@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import json
-from openkyrozen.tasks.engine import is_complete
+from openkyrozen.tasks.engine import TaskManager, is_complete
 
 
 def _missing_artifact_source_path(record):
@@ -97,6 +97,31 @@ def _verified_command_replacement(manager, record, later_records):
                 and any(item.get("receipt_id") == later.get("receipt_id") and item.get("acceptance_ids")
                         for item in replacement.get("evidence", ()))):
             return True
+    return False
+
+
+def _working_plan_edit_retried(manager, record, later_records):
+    verification = record.get("verification") or {}
+    if verification.get("method") != "working_plan_write_precondition" or not record.get("plan_id"):
+        return False
+    prior_task_id = record.get("requested_task_id")
+    for later in later_records:
+        effect = later.get("verification") or {}
+        task_id = later.get("requested_task_id") or later.get("task_id")
+        if (later.get("success") is not True or later.get("authorized") is not True or not task_id
+                or later.get("call_id_source") != "native"
+                or (effect.get("status") != "verified" and effect.get("file_content_changed") is not True)
+                or any(later.get(key) != record.get(key) for key in (
+                    "plan_id", "operation_id", "action", "workspace_id", "session_id", "user_id"))):
+            continue
+        if prior_task_id in {None, task_id}:
+            return True
+        plan = manager.working_plan
+        if plan is not None and plan.id == record["plan_id"] and plan.status == "completed":
+            tasks = {task["id"]: task for task in manager.tasks if task["id"] in plan.task_ids}
+            prior, current = tasks.get(prior_task_id, {}), tasks.get(task_id, {})
+            if prior.get("status") == "cancelled" and is_complete(current) and TaskManager._task_has_evidence(current):
+                return True
     return False
 
 
@@ -213,15 +238,7 @@ def _complete_turn(self, turn):
             continue
         if _verified_command_replacement(self.tasks, record, later_records):
             continue
-        if (verification.get("method") == "working_plan_write_precondition" and record.get("plan_id")
-                and any(later.get("success") is True and later.get("authorized") is True
-                        and later.get("call_id_source") == "native"
-                        and ((later.get("verification") or {}).get("status") == "verified"
-                             or (later.get("verification") or {}).get("file_content_changed") is True)
-                        and (requested := later.get("requested_task_id") or later.get("task_id"))
-                        and record.get("requested_task_id") in {None, requested}
-                        and all(later.get(key) == record.get(key) for key in ("plan_id", "operation_id", "action"))
-                        for later in later_records)):
+        if _working_plan_edit_retried(self.tasks, record, later_records):
             continue
         failed_verification = verification.get("status") == "failed"
         effect_action = (record.get("action") in {"write_file", "edit_file", "apply_patch"}
