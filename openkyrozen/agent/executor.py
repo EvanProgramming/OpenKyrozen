@@ -264,8 +264,14 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                                     sort_keys=True, separators=(",", ":"))
         if len(candidate_json) > _TOOL_ARTIFACT_THRESHOLD:
             tool_result = candidate
-    confirmation_result = (tool_result if tool_result is not None
-                           and tool_result.metadata.get("working_plan_confirmation") is True else None)
+    plan_read_result = None
+    plan_read_method = None
+    if canonical == "update_plan" and tool_result is not None:
+        for method in ("working_plan_confirmation", "working_plan_evidence_check"):
+            if tool_result.metadata.get(method) is True:
+                plan_read_result = tool_result.data
+                plan_read_method = method
+                break
     git_commit = tool_result.metadata.get("git_commit") if canonical == "git_show" and tool_result is not None else None
     read_data = tool_result.data if canonical == "read_file" and tool_result is not None else None
     archived_read_content = None
@@ -340,16 +346,20 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                 verification["observed"] = {"complete_file": True}
     if file_content_changed and success:
         verification["file_content_changed"] = True
-    if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:
+    if (canonical == "update_plan" and expected_spec is not None
+            and (call_id_source == "native" or plan_read_method == "working_plan_evidence_check")):
         from openkyrozen.agent.plan_tools import _update_plan
         executor = expected_spec.executor
         trusted = (getattr(executor, "__self__", None) is self
                    and getattr(executor, "__func__", None) is _update_plan.__tool_result_executor__)
         turn_id = self._conversation_turn_id.get()
-        if trusted and success and confirmation_result is not None:
-            confirmed = confirmation_result.data
-            verification = {"status": "verified", "method": "working_plan_confirmation", "observed": {
-                "plan_id": confirmed["plan_id"], "revision": confirmed["revision"], "turn_id": turn_id}}
+        if trusted and success and plan_read_result is not None:
+            verification = {
+                "status": "verified" if plan_read_method == "working_plan_confirmation" else "not_applicable",
+                "method": plan_read_method,
+                "observed": {"plan_id": plan_read_result["plan_id"], "revision": plan_read_result["revision"],
+                             "turn_id": turn_id},
+            }
         elif trusted and success and task_manager.working_plan is not None:
             plan = task_manager.working_plan
             verification = {"status": "verified", "method": "working_plan_commit", "observed": {
@@ -430,7 +440,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
         session_id=(getattr(current_session, "session_id", None) if delegated_parent else None)
         or getattr(task_manager, "session_id", None)
         or getattr(getattr(self, "memory_bank", None), "session_id", None),
-        plan_id=(verification["observed"]["plan_id"] if verification.get("method") == "working_plan_confirmation"
+        plan_id=(verification["observed"]["plan_id"]
+                 if plan_read_method is not None and verification.get("method") == plan_read_method
                  else task_plan_id or getattr(getattr(task_manager, "working_plan", None), "id", None)),
         task_id=task_id,
         tool_version=getattr(expected_spec, "version", None),
@@ -972,6 +983,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                              _pre_execution_check=local_binding_valid if task_plan_id is not None else None)
     assert isinstance(receipt, ExecutionReceipt)
     if (receipt.success and receipt.action != "run_cmd"
+            and receipt.verification.get("method") != "working_plan_evidence_check"
             and self._is_state_changing_action(receipt.action, args)):
         successful_operations.add(receipt.operation_id)
     return receipt

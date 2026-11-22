@@ -950,7 +950,8 @@ class WorkingPlanModelTests(unittest.TestCase):
 
     def test_native_task_selection_and_completion_suggestion_require_evidence(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
-            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))), session_id="native-selection")
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
+            manager = TaskManager(store, session_id="native-selection")
             created = manager.edit_plan(expected_revision=0, operations=[
                 {"op": "add", "ref": "first", "task": {"description": "Inspect", "acceptance": ["Inspected"]}},
                 {"op": "add", "ref": "second", "task": {"description": "Verify", "acceptance": ["Verified"], "dependencies": ["first"]}},
@@ -964,17 +965,20 @@ class WorkingPlanModelTests(unittest.TestCase):
                                          operations=[{"op": "start", "task": first}])
             self.assertEqual(manager.execution_task_id, first)
             self.assertEqual(selected["tasks"][0]["status"], "running")
+            edits_before = store.list_events("working_plan.updated", session_id="native-selection")
             suggested = manager.edit_plan(plan_id=created["plan_id"], expected_revision=2,
                                           operations=[{"op": "suggest_complete", "task": first}])
             self.assertEqual(suggested["tasks"][0]["status"], "running")
+            self.assertEqual(suggested["revision"], 2)
+            self.assertEqual(store.list_events("working_plan.updated", session_id="native-selection"), edits_before)
             manager.record_evidence(task_id=first, action="read_file", args="a.txt", result="checked",
                                     success=True, acceptance="Inspected", verification_status="verified")
             self.assertEqual(manager.tasks[0]["status"], "succeeded")
             self.assertIsNone(manager.execution_task_id)
-            confirmed = manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+            confirmed = manager.edit_plan(plan_id=created["plan_id"], expected_revision=2,
                                          operations=[{"op": "suggest_complete", "task": first}])
             self.assertTrue(confirmed["confirmation"])
-            self.assertEqual(confirmed["revision"], 3)
+            self.assertEqual(confirmed["revision"], 2)
             self.assertEqual(confirmed["status"], "active")
             self.assertEqual(confirmed["tasks"][1]["status"], "pending")
 
@@ -987,13 +991,13 @@ class WorkingPlanModelTests(unittest.TestCase):
                 nonlocal first_read
                 if first_read:
                     first_read = False
-                    concurrent.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                    concurrent.edit_plan(plan_id=created["plan_id"], expected_revision=2,
                                          operations=[{"op": "start", "task": second}])
                 return list_tasks(*args, **kwargs)
 
             with patch.object(manager.store, "list_working_plan_tasks", side_effect=edit_before_task_read):
                 with self.assertRaises(ValueError):
-                    manager.edit_plan(plan_id=created["plan_id"], expected_revision=3,
+                    manager.edit_plan(plan_id=created["plan_id"], expected_revision=2,
                                       operations=[{"op": "suggest_complete", "task": first}])
             self.assertEqual(concurrent.execution_task_id, second)
 

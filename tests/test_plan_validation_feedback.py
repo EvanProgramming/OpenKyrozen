@@ -1047,8 +1047,18 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                                    and item.call_id == "create-start")
                     case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])
                     before["visible_plan"] = deepcopy(state)
-                    call = ToolCall("read", "read_file", {"path": "catalog.py"})
+                    before["confirmation"] = edit
+                    call = ToolCall("check-evidence", "update_plan", edit)
                 elif self.calls == 3:
+                    state = self.plan_state(messages)
+                    case.assertEqual(state["status"], "active")
+                    case.assertEqual(state["revision"], before["visible_plan"]["revision"])
+                    checked = next(item for item in messages if isinstance(item, ToolReply)
+                                   and item.call_id == "check-evidence")
+                    case.assertFalse(checked.is_error, checked.output)
+                    case.assertIn("Completion remains unverified", json.dumps(checked.output))
+                    call = ToolCall("read", "read_file", {"path": "catalog.py"})
+                elif self.calls == 4:
                     state = self.plan_state(messages)
                     case.assertEqual(state["status"], "completed")
                     case.assertEqual(state["plan_id"], before["visible_plan"]["plan_id"])
@@ -1070,9 +1080,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                                    and item.call_id == "create-start")
                     case.assertNotIn("artifact_id", created.output["data"])
                     case.assertEqual(created.output["data"]["plan_id"], state["plan_id"])
-                    call = ToolCall("confirm", "update_plan", {
-                        "plan_id": state["plan_id"], "expected_revision": state["revision"],
-                        "operations": [{"op": "suggest_complete", "task": state["tasks"][0]["id"]}]})
+                    call = ToolCall("confirm", "update_plan", before["confirmation"])
                 else:
                     return ModelResponse(text="sorted_products sorts by casefold and original spelling.",
                                          finish_reason=FinishReason.FINAL)
@@ -1086,7 +1094,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 return json.loads(pins[0].split("\n", 2)[2])
         provider = Provider(ProviderConfig(provider="custom", model_simple="fixture"))
         answer, events = self._chat(provider)
-        self.assertEqual(provider.calls, 4)
+        self.assertEqual(provider.calls, 5)
         self.assertEqual([event.payload["status"] for event in events if event.kind == "turn.completed"],
                          ["completed"], answer)
         self.assertEqual(runtime.tasks.working_plan.id, before["visible_plan"]["plan_id"])
@@ -1097,6 +1105,10 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertEqual(len(rows[0]["evidence"]), 1)
         receipts = runtime.memory_bank.store.list_events("execution.receipt", user_id=runtime.tasks.user_id,
             workspace_id=runtime.tasks.workspace_id, session_id=runtime.tasks.session_id)
+        checked = next(row["payload"] for row in receipts if row["payload"]["call_id"] == "check-evidence")
+        self.assertEqual(checked["verification"]["method"], "working_plan_evidence_check")
+        self.assertEqual(checked["verification"]["status"], "not_applicable")
+        self.assertEqual(checked["verification"]["observed"]["revision"], before["visible_plan"]["revision"])
         confirm = next(row["payload"] for row in receipts if row["payload"]["call_id"] == "confirm")
         self.assertTrue(confirm["success"])
         self.assertEqual(confirm["verification"]["method"], "working_plan_confirmation")

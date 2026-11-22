@@ -408,13 +408,26 @@ class TaskManager:
                     plan_id, user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id or "",
                     current_active_revision=expected_revision,
                 )
-                confirmed_ids = {task["id"] for task in confirmed_tasks
-                                 if task["status"] == "succeeded" and not _unknown_recovery_effect(task)
-                                 and self._task_has_evidence(task)}
-                if all(op["task"] in confirmed_ids for op in operations):
-                    return {"plan_id": plan_id, "revision": expected_revision, "status": saved["status"],
-                            "complexity": complexity, "task_ids": [task["id"] for task in confirmed_tasks],
-                            "tasks": confirmed_tasks, "references": {}, "confirmation": True}
+                checked_tasks = {task["id"]: task for task in confirmed_tasks}
+                if any(op["task"] not in checked_tasks for op in operations):
+                    raise ValueError("Completion suggestion requires a task in the current Working Plan revision")
+                requested = [checked_tasks[op["task"]] for op in operations]
+                awaiting_evidence = []
+                for task in requested:
+                    if (task["status"] == "succeeded" and not _unknown_recovery_effect(task)
+                            and self._task_has_evidence(task)):
+                        continue
+                    if (task["status"] not in {"pending", "running"} or _unknown_recovery_effect(task)
+                            or not self._dependencies_succeeded(task, confirmed_tasks) or self._task_has_evidence(task)):
+                        break
+                    awaiting_evidence.append(task["id"])
+                else:
+                    if len(awaiting_evidence) in (0, len(requested)):
+                        # Keep the completion request in memory without creating an empty durable edit.
+                        self._pending_completions.update(awaiting_evidence)
+                        return {"plan_id": plan_id, "revision": expected_revision, "status": saved["status"],
+                                "complexity": complexity, "task_ids": [task["id"] for task in confirmed_tasks],
+                                "tasks": confirmed_tasks, "references": {}, "confirmation": not awaiting_evidence}
 
         original_ids = {task["id"] for task in previous_tasks}
         tasks = deepcopy(previous_tasks)

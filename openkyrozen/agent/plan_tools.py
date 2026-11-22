@@ -165,7 +165,8 @@ def _update_plan(self, arguments: dict):
             unverified = {task["status"] for task in result["tasks"]
                           if task["id"] in suggested and task["status"] not in {"succeeded", "cancelled"}}
             confirmation = result.get("confirmation") is True
-            text = "Working Plan updated."
+            checked_only = result["revision"] == arguments["expected_revision"]
+            text = "Checked completion evidence." if checked_only else "Working Plan updated."
             if confirmation:
                 text = ("Working Plan already completed; verified tasks confirmed without changes."
                         if result["status"] == "completed"
@@ -180,8 +181,12 @@ def _update_plan(self, arguments: dict):
                          "To correct an ordinary running task, use cancel, add, then start the new ref. "
                          "Redirect pending dependencies to the new ref in the same edit. "
                          "Changes to approved criteria require renewed approval.")
-            return tool_success(text, data=result,
-                                metadata={"working_plan_confirmation": True} if confirmation else None)
+            metadata = {}
+            if confirmation:
+                metadata["working_plan_confirmation"] = True
+            elif checked_only:
+                metadata["working_plan_evidence_check"] = True
+            return tool_success(text, data=result, metadata=metadata)
         plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"],
                                       execution_validator=validate_file_execution)
     except (KeyError, TypeError, ValueError) as exc:
