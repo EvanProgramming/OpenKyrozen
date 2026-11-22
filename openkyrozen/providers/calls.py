@@ -132,23 +132,17 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != getattr(plan, "id", None)
             can_add_command = not accepted and not interaction.get("pending_plan")
             ordinary_followup = _native_tool_phase == "plan_completed" and can_add_command
-            can_replace_command = (
-                _native_tool_phase == "plan_active" and plan is not None and can_add_command
-                and "run_cmd" in current_names and any(
-                    task["id"] in plan.task_ids and task["status"] == "running"
-                    and (task.get("evidence") or [{}])[-1].get("failed_command_exit_code") is not None
-                    for task in self.tasks.tasks
-                )
-            )
-            from openkyrozen.tasks.engine import can_bind_command_check
-            can_bind_command = (
-                _native_tool_phase == "plan_active" and plan is not None and can_add_command
-                and "run_cmd" in current_names and any(
-                    task["id"] in plan.task_ids and can_bind_command_check(task) for task in self.tasks.tasks
-                )
-            )
+            from openkyrozen.tasks.engine import can_bind_command_check, can_replace_complete_read_check
+            command_tasks = [task for task in self.tasks.tasks if task["id"] in plan.task_ids] if (
+                _native_tool_phase == "plan_active" and plan is not None
+                and can_add_command and "run_cmd" in current_names) else ()
+            can_replace_command = any(task["status"] == "running"
+                and (task.get("evidence") or [{}])[-1].get("failed_command_exit_code") is not None
+                for task in command_tasks)
+            can_replace_read = any(can_replace_complete_read_check(task) for task in command_tasks)
+            can_bind_command = any(can_bind_command_check(task) for task in command_tasks)
             unavailable = set()
-            if not can_replace_command:
+            if not (can_replace_command or can_replace_read):
                 unavailable.add("replace_command_check")
             if not can_bind_command:
                 unavailable.add("bind_command_check")
@@ -209,6 +203,11 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     if can_bind_command:
                         criterion_guidance += ("Use bind_command_check with the listed task ID and exact command for a "
                                                "pending or just-selected prose-only task. Start it in the same call if pending. ")
+                    if can_replace_read:
+                        criterion_guidance += (
+                            "For a source edit after selecting a complete-read check, use one replace_command_check "
+                            "with task, ref and the exact test command. It starts the new check and preserves dependencies. "
+                        )
                     if can_replace_command:
                         criterion_guidance += (
                             "If the selected verification command needs correction, use replace_command_check "

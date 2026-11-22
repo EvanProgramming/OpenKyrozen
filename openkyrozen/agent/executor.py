@@ -677,11 +677,19 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                     selected = self.tasks.active_working_task(_task_id) if _task_id else None
                     if not selected or not _file_edit_has_contract(
                             self, selected, action, execution_args, adapters):
+                        from openkyrozen.tasks.engine import can_bind_command_check, can_replace_complete_read_check
+                        guidance = "Select a Working Plan task with typed verification before editing files."
+                        if (selected and self._execution_capability_token.allows("shell")
+                                and "run_cmd" in self._permitted_tool_names()):
+                            if can_replace_complete_read_check(selected):
+                                guidance += (" Use one update_plan operation, replace_command_check, with the selected "
+                                             "task ID, a new ref and the exact test command. It starts the replacement "
+                                             "and preserves dependent tasks.")
+                            elif can_bind_command_check(selected):
+                                guidance += (" Use update_plan with bind_command_check, the selected task ID and "
+                                             "the exact command.")
                         plan_write_precondition = True
-                        outcome = tool_failure("plan_verification_required",
-                            "Select a Working Plan task with typed verification before editing files. "
-                            "Use update_plan with bind_command_check, the listed task ID and the exact command, then start the task if pending.",
-                            retriable=True)
+                        outcome = tool_failure("plan_verification_required", guidance, retriable=True)
                         break
                 if callable(_on_dispatch):
                     _on_dispatch()

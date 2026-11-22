@@ -189,6 +189,71 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 self.assertEqual(receipt.success, allowed, receipt.result)
                 self.assertEqual((self.root / path).exists(), allowed)
 
+    def test_selected_complete_read_can_be_replaced_by_an_exact_command_in_one_edit(self):
+        criterion = "Refactor catalog.py and preserve sorting"
+        task = {"description": criterion, "acceptance": [{
+            "criterion": criterion,
+            "verification": {"action": "read_file", "arguments": {"path": "catalog.py"},
+                             "expect": {"complete": True}},
+        }]}
+        created = self.invoke({"expected_revision": 0, "operations": [
+            {"op": "add", "ref": "refactor", "task": task},
+            {"op": "add", "ref": "test", "task": {
+                "description": "Run the original catalog tests",
+                "acceptance": ["Catalog tests pass"], "dependencies": ["refactor"],
+            }},
+            {"op": "start", "task": "refactor"},
+        ]})
+        self.assertTrue(created.success, created.text)
+        plan_id = created.data["plan_id"]
+        selected, dependent = created.data["task_ids"]
+        self.runtime.execution_context.native_plan_active = True
+        operations = set()
+
+        def write(call_id, task_id):
+            return self.runtime._execute_turn_action(
+                "write_file", {"path": "catalog.py", "content": self.content + "\n"},
+                operation_scope="catalog", successful_operations=operations, call_id=call_id,
+                call_id_source="native", task_id=task_id, task_plan_id=plan_id,
+            )
+
+        blocked = write("before-replacement", selected)
+        self.assertEqual(blocked.failure, "plan_verification_required")
+        self.assertEqual((self.root / "catalog.py").read_text(), self.content)
+        with patch.object(self.runtime, "_permitted_tool_names", return_value={"read_file", "write_file", "update_plan"}):
+            without_shell = write("without-shell", selected)
+            self.assertEqual(without_shell.failure, "plan_verification_required")
+            self.assertNotIn("replace_command_check", without_shell.result)
+        command = "python3 -m unittest test_catalog.py"
+        replaced = self.invoke({"plan_id": plan_id, "expected_revision": created.data["revision"],
+            "operations": [{"op": "replace_command_check", "task": selected, "ref": "verified-edit", "command": command}]})
+        self.assertTrue(replaced.success, replaced.text)
+        replacement = replaced.data["references"]["verified-edit"]
+        tasks = {item["id"]: item for item in self.runtime.tasks.tasks}
+        self.assertIn("replace_command_check", blocked.result)
+        self.assertEqual(self.runtime.tasks.execution_task_id, replacement)
+        self.assertEqual(tasks[selected]["status"], "cancelled")
+        self.assertEqual(tasks[selected]["acceptance"][0]["expect"], {"complete": True})
+        self.assertEqual(tasks[dependent]["dependencies"], [replacement])
+        active = tasks[replacement]
+        self.assertEqual((active["description"], active["evidence"]), (criterion, []))
+        self.assertEqual(active["checkpoint"]["supersedes"], [selected])
+        check, = active["acceptance"]
+        self.assertEqual((check["criterion"], check["action"]), (criterion, "run_cmd"))
+        self.assertEqual(json.loads(check["args"]), {"command": command})
+        self.assertTrue(write("after-replacement", replacement).success)
+
+    def test_command_replacement_preserves_an_exact_expected_read_criterion(self):
+        plan = self.create_read_task()
+        self.start(plan)
+        task_id, = plan["task_ids"]
+        before = deepcopy(self.runtime.tasks.tasks[0])
+        denied = self.invoke({"plan_id": plan["plan_id"], "expected_revision": self.runtime.tasks.working_plan.revision,
+            "operations": [{"op": "replace_command_check", "task": task_id, "ref": "new",
+                            "command": "python3 -m unittest"}]})
+        self.assertFalse(denied.success)
+        self.assertEqual(self.runtime.tasks.tasks[0], before)
+
     def test_pinned_plan_retains_legacy_execution_as_descriptive_state(self):
         created = self.create_read_task()
         execution = {"action": "read_file", "args": "catalog.py"}

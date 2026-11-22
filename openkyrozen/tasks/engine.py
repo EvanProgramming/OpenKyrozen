@@ -26,6 +26,16 @@ def can_bind_command_check(task):
                  or task["status"] == "running" and checkpoint.get("native_execution_selected")))
 
 
+def can_replace_complete_read_check(task):
+    checkpoint = task.get("checkpoint") or {}
+    criteria = task.get("acceptance", ())
+    return (task["status"] == "running" and checkpoint.get("native_execution_selected")
+            and not _unknown_recovery_effect(task) and not checkpoint.get("strategic_plan")
+            and not checkpoint.get("action") and not task.get("attempts") and not task.get("evidence")
+            and len(criteria) == 1 and isinstance(criteria[0], dict)
+            and criteria[0].get("action") == "read_file" and criteria[0].get("expect") == {"complete": True})
+
+
 class TaskManager:
     """Compatibility facade backed by SQLite and guarded by evidence."""
 
@@ -449,7 +459,7 @@ class TaskManager:
             anchor["dependencies"] = list(dict.fromkeys([*anchor.get("dependencies", []), task_id]))
             return task_id
 
-        def supersede(source_ids: list[str], ref: str, task_data: Any, *, failed_command=False) -> str:
+        def supersede(source_ids: list[str], ref: str, task_data: Any, *, allow_running=False) -> str:
             if any(_unknown_recovery_effect(by_id[item]) for item in source_ids):
                 raise ValueError("interrupted effects require trusted reconciliation before replacement")
             strategic_sources = [by_id[item] for item in source_ids
@@ -463,7 +473,7 @@ class TaskManager:
             fields = self._plan_task_fields(task_data, allow_complete_read=allow_complete_read)
             sources = [by_id[item] for item in source_ids]
             if any(item["status"] not in {"pending", "failed", "blocked"}
-                   and not (failed_command and item["status"] == "running")
+                   and not (allow_running and item["status"] == "running")
                    and not (item["status"] == "cancelled" and (item.get("checkpoint") or {}).get("superseded_by"))
                    for item in sources):
                 raise ValueError("only pending, failed, or blocked tasks can be superseded")
@@ -570,22 +580,27 @@ class TaskManager:
                 criteria = task["acceptance"]
                 evidence = task.get("evidence") or []
                 last = evidence[-1] if evidence else {}
-                if (not allow_complete_read or task["status"] != "running"
-                        or not checkpoint.get("native_execution_selected")
-                        or len(criteria) != 1 or not isinstance(criteria[0], dict)
-                        or criteria[0].get("action") != "run_cmd" or not isinstance(criteria[0].get("args"), str)
-                        or last.get("action") != "run_cmd" or not last.get("receipt_id")
-                        or last.get("success") is not False or type(last.get("failed_command_exit_code")) is not int
-                        or last["failed_command_exit_code"] == 0):
-                    raise ValueError("command replacement requires an ordinary selected check with a failed command receipt")
+                complete_read = can_replace_complete_read_check(task)
+                failed_command = (
+                    task["status"] == "running" and checkpoint.get("native_execution_selected")
+                    and len(criteria) == 1 and isinstance(criteria[0], dict)
+                    and criteria[0].get("action") == "run_cmd" and isinstance(criteria[0].get("args"), str)
+                    and last.get("action") == "run_cmd" and last.get("receipt_id")
+                    and last.get("success") is False and type(last.get("failed_command_exit_code")) is int
+                    and last["failed_command_exit_code"] != 0
+                )
+                if not allow_complete_read or not (complete_read or failed_command):
+                    raise ValueError("command replacement requires an ordinary selected complete-read check "
+                                     "with no evidence or a matching failed command receipt")
                 criterion = criteria[0]
-                arguments = json.loads(criterion["args"])
-                if (last.get("args_sha256") != hashlib.sha256(criterion["args"].encode("utf-8")).hexdigest()
+                arguments = {} if complete_read else json.loads(criterion["args"])
+                if not complete_read and (
+                        last.get("args_sha256") != hashlib.sha256(criterion["args"].encode("utf-8")).hexdigest()
                         or checkpoint.get("action") and (checkpoint["action"] != "run_cmd"
                             or checkpoint.get("args") != criterion["args"])):
                     raise ValueError("the failed command must match the selected task's verification contract")
                 command = operation["command"]
-                if not isinstance(command, str) or not command.strip() or command == arguments["command"]:
+                if not isinstance(command, str) or not command.strip() or command == arguments.get("command"):
                     raise ValueError("command replacement requires a different nonempty command")
                 if arguments.get("background"):
                     raise ValueError("background commands cannot be replaced as foreground checks")
@@ -594,10 +609,11 @@ class TaskManager:
                     "description": task["description"], "priority": task["priority"],
                     "acceptance": [{"criterion": criterion["criterion"], "verification": verification}],
                     **({"execution": verification} if checkpoint.get("action") else {}),
-                }, failed_command=True)
-                by_id[corrected]["checkpoint"]["replaced_command_receipts"] = [
-                    *checkpoint.get("replaced_command_receipts", ()), last["receipt_id"],
-                ]
+                }, allow_running=True)
+                if not complete_read:
+                    by_id[corrected]["checkpoint"]["replaced_command_receipts"] = [
+                        *checkpoint.get("replaced_command_receipts", ()), last["receipt_id"],
+                    ]
                 kind = "start"
                 operation = {"op": kind, "task": corrected}
             if kind == "add":
