@@ -13,6 +13,7 @@ from typing import ClassVar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from benchmarks.v3_matched import BudgetLedger
 
@@ -21,6 +22,7 @@ MAX_OUTPUT_TOKENS = 4096
 MAX_REQUEST_BYTES = 20_000_000
 MAX_ERROR_BODY_BYTES = 65_536
 UPSTREAM_STREAM_SECONDS = 180
+UPSTREAM_CONNECT_SECONDS = 15
 MAX_UPSTREAM_STREAM_BYTES = 16_000_000
 DISCONNECTED_STREAM_DRAIN_SECONDS = 30
 DISCONNECTED_STREAM_DRAIN_BYTES = 4_000_000
@@ -114,6 +116,12 @@ def _strict_wire_evidence(response_id, finish, arguments):
             "calls": [argument_wire_evidence(index, value) for index, value in sorted(arguments.items())]}
 
 
+def _connection_was_not_established(error: requests.RequestException) -> bool:
+    cause = error.args[0] if error.args else None
+    return (isinstance(error, requests.exceptions.ConnectTimeout)
+            or isinstance(cause, MaxRetryError) and isinstance(cause.reason, NewConnectionError))
+
+
 class ResponsesRelay:
     def __init__(self, *, endpoint: str, api_key: str, budget: BudgetLedger,
                  config: RelayConfig = DEFAULT_RELAY_CONFIG, responses_policy=None):
@@ -137,6 +145,10 @@ class ResponsesRelay:
         self.endpoint = endpoint.rstrip("/")
         if config.formal_fixed and (self.endpoint != "https://api.deepseek.com" or responses_policy is not None):
             raise ValueError("fixed DeepSeek protocol requires the pinned endpoint")
+        self._upstream_session = None
+        if (self.endpoint == "https://api.deepseek.com" and
+                (config.reasoning_effort == "low" or getattr(responses_policy, "reasoning_effort", None) == "low")):
+            self._upstream_session = requests.Session()
         self.upstream_route = "/beta/chat/completions" if config.strict_chat else "/responses"
         if config.strict_chat:
             self.protocol = "strict-chat"
@@ -156,6 +168,7 @@ class ResponsesRelay:
         self._actor_credentials = {}
         self._issued_actor_keys = set()
         self._upstream_lock = threading.Lock()
+        self._closing = threading.Event()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -203,9 +216,31 @@ class ResponsesRelay:
             return True, record['actor_id'], record['label']
 
     def close(self) -> None:
+        self._closing.set()
         self._server.shutdown()
         self._server.server_close()
         self._thread.join()
+        if self._upstream_session is not None:
+            with self._request_lock:
+                self._upstream_session.close()
+
+    def _post_upstream(self, encoded: bytes, *, wants_stream: bool, row: dict) -> requests.Response:
+        url = self.endpoint + self.upstream_route
+        headers = {"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"}
+        session = self._upstream_session
+        if session is None:
+            return requests.post(url, data=encoded, headers=headers, timeout=UPSTREAM_STREAM_SECONDS,
+                                 allow_redirects=False, stream=wants_stream)
+        session.cookies.clear()
+        for attempt in range(2):
+            try:
+                # Return upon receipt of headers. The JSON field still selects provider SSE.
+                return session.post(url, data=encoded, headers=headers, allow_redirects=False, stream=True,
+                                    timeout=(UPSTREAM_CONNECT_SECONDS, UPSTREAM_STREAM_SECONDS))
+            except requests.RequestException as error:
+                if attempt or not _connection_was_not_established(error):
+                    raise
+                row["connect_retries"] = 1
 
     def _settle_response(self, row, response, *, stream=False):
         policy = self.responses_policy
@@ -406,6 +441,9 @@ class ResponsesRelay:
                 reserved = False
                 try:
                     with relay._upstream_lock:
+                        if relay._closing.is_set():
+                            self._json(503, {"error": {"message": "benchmark relay is closing"}})
+                            return
                         if policy is not None and relay.official:
                             policy.check_transport()
                         still_authorized, current_actor, current_label = relay._authorize_client(
@@ -442,16 +480,14 @@ class ResponsesRelay:
                             if policy is not None and actor_id is not None:
                                 relay._selected_models[(actor_id, label)] = body['model']
                         try:
-                            upstream = requests.post(
-                                relay.endpoint + relay.upstream_route, data=encoded,
-                                headers={"Authorization": "Bearer " + relay.api_key,
-                                         "Content-Type": "application/json"},
-                                timeout=180, allow_redirects=False, stream=wants_stream,
-                            )
+                            upstream = relay._post_upstream(encoded, wants_stream=wants_stream, row=row)
                         except requests.RequestException as exc:
                             relay.provider_error = f"upstream_transport_{type(exc).__name__}"
                             relay.budget.settle(attempt_id, None)
                             row["transport_error"] = type(exc).__name__
+                            if relay._upstream_session is not None:
+                                row["transport_failure_phase"] = (
+                                    "connecting" if _connection_was_not_established(exc) else "before_response_headers")
                             self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
                             return
                         row["http_status"] = upstream.status_code
@@ -634,6 +670,8 @@ class ResponsesRelay:
                     if row["status"] == "unknown":
                         relay.budget.settle(attempt_id, None)
                         row["transport_error"] = type(exc).__name__
+                        if relay._upstream_session is not None and "http_status" in row:
+                            row["transport_failure_phase"] = "reading_response_body"
                     if not stream_started:
                         try:
                             self._json(502, {"error": {"message": "benchmark upstream transport failed"}})

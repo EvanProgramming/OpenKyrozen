@@ -756,6 +756,71 @@ class DeepSeekBudgetTests(unittest.TestCase):
 
 
 class DeepSeekRelayTests(unittest.TestCase):
+    def test_low_transport_reuses_completed_http_connections_and_never_replays_dispatched_post(self):
+        from benchmarks import v3_deepseek as deepseek
+        from benchmarks.v3_responses_relay import ResponsesRelay
+
+        received = []
+
+        class Upstream(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                received.append((self.client_address[1], self.headers.get("Cookie"), body))
+                if body["input"] == "disconnect":
+                    self.close_connection = True
+                    return
+                payload = json.dumps({"model": "deepseek-flash", "status": "completed", "output": [],
+                                      "reasoning": {"effort": "low"}, "usage": {
+                                          "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                                          "input_tokens_details": {"cached_tokens": 0},
+                                          "output_tokens_details": {"reasoning_tokens": 0},
+                                      }}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Set-Cookie", "provider_session=ignore-me")
+                self.end_headers()
+                self.wfile.write(payload)
+
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        server = threading.Thread(target=upstream.serve_forever, daemon=True)
+        server.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                ledger = v3_matched.BudgetLedger(Path(directory) / "budget.sqlite", limit_rmb="15",
+                                                pricing=deepseek.DEEPSEEK_PRICING)
+                relay = ResponsesRelay(endpoint=deepseek.DEEPSEEK_ENDPOINT, api_key="fake", budget=ledger,
+                                       config=deepseek.DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG)
+                relay.endpoint = f"http://127.0.0.1:{upstream.server_port}"
+                relay.start()
+                try:
+                    headers = {"Authorization": f"Bearer {relay.client_key}"}
+                    def post(value):
+                        return requests.post(relay.url + "/responses", headers=headers,
+                                             json={"input": value}, timeout=5)
+                    self.assertEqual(post("first").status_code, 200)
+                    self.assertEqual(post("second").status_code, 200)
+                    self.assertEqual(post("disconnect").status_code, 502)
+                    self.assertEqual(post("after disconnect").status_code, 503)
+                    self.assertEqual([body["input"] for _, _, body in received], ["first", "second", "disconnect"])
+                    self.assertEqual(len({port for port, _, _ in received}), 1)
+                    self.assertTrue(all(cookie is None for _, cookie, _ in received))
+                    self.assertTrue(all(body["reasoning"] == {"effort": "low"} for _, _, body in received))
+                    self.assertCountEqual([call["status"] for call in ledger.campaign_calls()],
+                                          ["settled", "settled", "unknown"])
+                    self.assertEqual(relay.rows[-1]["transport_failure_phase"], "before_response_headers")
+                finally:
+                    relay.close()
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+            server.join()
+
     def test_formal_responses_smoke_pins_thinking_and_retains_continuation_and_ledger_provenance(self):
         from benchmarks import v3_deepseek as deepseek
 
@@ -768,17 +833,30 @@ class DeepSeekRelayTests(unittest.TestCase):
 
         self._assert_formal_responses_smoke(DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG, reported_effort="high")
 
-    def _assert_formal_responses_smoke(self, config, *, reported_effort=None):
+    def test_low_transport_retries_only_connections_that_did_not_send_a_request(self):
+        from benchmarks.v3_deepseek import DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG
+        from urllib3.exceptions import MaxRetryError, NewConnectionError
+
+        for error in (
+                requests.exceptions.ConnectTimeout(),
+                requests.exceptions.ConnectionError(MaxRetryError(None, "/responses", NewConnectionError(None, "DNS")))):
+            with self.subTest(error=type(error).__name__):
+                self._assert_formal_responses_smoke(DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG, connect_error=error)
+
+    def _assert_formal_responses_smoke(self, config, *, reported_effort=None, connect_error=None):
         from benchmarks import v3_deepseek as deepseek
         from benchmarks.v3_responses_relay import ResponsesRelay
         from unittest.mock import Mock, patch
 
         bodies = []
+        faults = [connect_error] if connect_error else []
         reasoning = {"type": "reasoning", "id": "rs_1", "summary": [],
                      "content": [{"type": "reasoning_text", "text": "echo once"}]}
 
         def upstream(url, *, data, **_options):
             self.assertEqual(url, deepseek.DEEPSEEK_ENDPOINT + "/responses")
+            if faults:
+                raise faults.pop()
             body = json.loads(data)
             bodies.append(body)
             self.assertEqual(body["reasoning"], {"effort": config.reasoning_effort})
@@ -819,7 +897,11 @@ class DeepSeekRelayTests(unittest.TestCase):
                                    config=config)
             relay.start()
             try:
-                with patch("benchmarks.v3_responses_relay.requests", post=upstream):
+                if config.reasoning_effort == "low":
+                    transport = patch.object(relay._upstream_session, "post", side_effect=upstream)
+                else:
+                    transport = patch("benchmarks.v3_responses_relay.requests", post=upstream)
+                with transport:
                     self.assertEqual(deepseek.run_smoke(relay, "candidate"), reported_effort is None)
                 calls = ledger.campaign_calls()
                 if reported_effort is not None:
@@ -829,6 +911,8 @@ class DeepSeekRelayTests(unittest.TestCase):
                     self.assertEqual(relay.provider_error, "upstream_reasoning_effort_mismatch")
                     return
                 self.assertEqual(len(calls), 2)
+                self.assertEqual(len(bodies), 2)
+                self.assertEqual(sum(row.get("connect_retries", 0) for row in relay.rows), int(connect_error is not None))
                 self.assertEqual(set(relay.smoke_verified_attempt_ids), {call["attempt_id"] for call in calls})
                 for call in calls:
                     self.assertEqual(call["protocol"], config.journal_protocol)
