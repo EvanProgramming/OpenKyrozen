@@ -240,14 +240,19 @@ class EventStore:
             plan, tasks, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
         )
 
+    def current_interaction_event_id(self, *, user_id, workspace_id, session_id):
+        return self.tasks.current_interaction_event_id(
+            user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def apply_working_plan_edit(self, plan, tasks, *, expected_revision, expected_tasks,
                                 user_id, workspace_id, session_id, transaction_event=None,
-                                revision_operations=None, revision_reason=None):
+                                revision_operations=None, revision_reason=None, expected_completed_plan=None):
         return self.tasks.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=expected_tasks,
             user_id=user_id, workspace_id=workspace_id, session_id=session_id,
             transaction_event=transaction_event, revision_operations=revision_operations,
-            revision_reason=revision_reason,
+            revision_reason=revision_reason, expected_completed_plan=expected_completed_plan,
         )
 
     def claim_task(self, *, user_id, workspace_id, session_id):

@@ -315,6 +315,7 @@ class TaskManager:
                   transaction_event: dict[str, Any] | None = None,
                   strategy_validator=None,
                   execution_validator=None,
+                  expected_completed_plan: tuple[str, int, str | None] | None = None,
                   reason: str | None = None) -> dict[str, Any]:
         """Apply a validated ordered operation batch as one revision-checked transaction."""
         if type(expected_revision) is not int or expected_revision < 0:
@@ -323,6 +324,8 @@ class TaskManager:
             raise ValueError("operations must be an array")
         if not operations:
             raise ValueError("operations cannot be empty")
+        if expected_completed_plan is not None and (plan_id is not None or expected_revision != 0):
+            raise ValueError("A completed predecessor can only guard creation of a new Working Plan")
         if plan_id is not None and (not isinstance(plan_id, str) or not plan_id.strip()):
             raise ValueError("plan_id must be a nonempty string")
         if strategic_bindings is not None and not isinstance(strategic_bindings, dict):
@@ -892,6 +895,7 @@ class TaskManager:
             plan, tasks, expected_revision=expected_revision, expected_tasks=previous_tasks,
             user_id=self.user_id, workspace_id=self.workspace_id, session_id=self.session_id,
             revision_operations=deepcopy(operations), revision_reason=reason.strip() if reason else None,
+            expected_completed_plan=expected_completed_plan,
             transaction_event=(
                 {"event_type": transaction_event["event_type"], **(
                     {"expected_proposal": transaction_event["expected_proposal"]}
@@ -943,6 +947,7 @@ class TaskManager:
                     operations: list[dict[str, Any]] | None = None,
                     strategy_validator=None,
                     execution_validator=None,
+                    expected_completed_plan: tuple[str, int, str | None] | None = None,
                     reason: str | None = None) -> WorkingPlan | dict[str, Any]:
         """Apply canonical operations or adapt the historical complexity/tasks shape."""
         if operations is not None:
@@ -950,7 +955,8 @@ class TaskManager:
                 raise ValueError("expected_revision is required for plan edits")
             return self.edit_plan(complexity=complexity, plan_id=plan_id,
                                   expected_revision=expected_revision, operations=operations, reason=reason,
-                                  strategy_validator=strategy_validator, execution_validator=execution_validator)
+                                  strategy_validator=strategy_validator, execution_validator=execution_validator,
+                                  expected_completed_plan=expected_completed_plan)
         if not isinstance(tasks, list) or not tasks:
             raise ValueError("a Working Plan requires at least one task")
         saved = self.store.get_working_plan(

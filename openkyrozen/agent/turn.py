@@ -67,6 +67,7 @@ class ExecutionContext:
     native_plan_inspected: bool = False
     native_plan_active: bool = False
     native_plan_completed: bool = False
+    native_completed_predecessor: tuple[str, int, str | None] | None = None
     native_wire_regeneration: bool = False
 
 

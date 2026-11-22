@@ -218,10 +218,10 @@ class NativeContextTests(unittest.TestCase):
             answer = AgentEngine(runtime).run(turn)
         return answer, turn, state
 
-    def provider(self, callback, *, stream=False):
-        class Provider(LLMProvider):
+    def provider(self, callback, *, stream=False, provider_base=LLMProvider):
+        class Provider(provider_base):
             def __init__(self):
-                super().__init__(ProviderConfig(provider="custom", model_simple="context-fixture"))
+                LLMProvider.__init__(self, ProviderConfig(provider="custom", model_simple="context-fixture"))
                 self.requests = []
                 self.tool_requests = []
             def get_capabilities(self, model=None):
@@ -365,6 +365,125 @@ class NativeContextTests(unittest.TestCase):
         self.assertFalse(turn.protocol_error_message)
         self.assertEqual(len(provider.requests), 6)
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
+
+    def test_responses_completed_plan_command_form_preserves_scope_and_creates_a_bound_check(self):
+        import shlex
+        from dataclasses import replace
+
+        from benchmarks.v3_matched_live import FIXTURES, _initial_plan
+        from openkyrozen.providers.fallback import FallbackProvider
+        from openkyrozen.providers.openai import OpenAIResponsesProvider
+        from openkyrozen.tasks.engine import TaskManager
+
+        command = f"{shlex.quote(sys.executable)} -c 'print(42)'"
+        start = {"description": "Verify the output", "command": command}
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        for case in ("permitted", "fallback", "shell denied", "mixed arguments", "stale plan",
+                     "durable stale plan", "interaction changed"):
+            with self.subTest(case=case):
+                self.runtime.tasks.clear()
+                inspected_plan = pending_patch = None
+                allowed = case in {"permitted", "fallback"}
+
+                def respond(provider, messages, model):
+                    nonlocal inspected_plan, pending_patch
+                    step = len(provider.requests)
+                    if step == 1:
+                        call = ToolCall("inspect-plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
+                            {"op": "start", "task": "inspect"},
+                        ]})
+                    elif step == 2:
+                        call = ToolCall("inspect-file", "read_file", {"path": "notes.txt"})
+                    elif step == 3:
+                        plan = self.runtime.tasks.working_plan
+                        self.assertEqual(plan.status, "completed")
+                        inspected_plan = plan.id
+                        schema = next(tool["parameters"] for tool in provider.tool_requests[-1]
+                                      if tool["name"] == "update_plan")
+                        self.assertEqual(schema["type"], "object")
+                        schema_error = self.runtime.tool_registry._argument_error
+                        if case == "shell denied":
+                            self.assertTrue(schema_error(schema, start))
+                        else:
+                            self.assertFalse(schema_error(schema, start))
+                            self.assertTrue(schema_error(schema, {**start, "expected_revision": 0}))
+                            self.assertFalse(schema_error(schema, {"expected_revision": plan.revision,
+                                "plan_id": plan.id, "operations": [
+                                    {"op": "suggest_complete", "task": plan.task_ids[0]}]}))
+                        if case == "stale plan":
+                            self.runtime.tasks.working_plan = replace(plan)
+                        if case == "durable stale plan":
+                            manager = self.runtime.tasks
+                            other = TaskManager(manager.store, user_id=manager.user_id,
+                                                workspace_id=manager.workspace_id, session_id=manager.session_id)
+                            newer = other.update_plan(expected_revision=0, operations=[
+                                {"op": "add_read_check", "ref": "other", "path": "notes.txt"},
+                            ])
+                            other.update_plan(plan_id=newer["plan_id"], expected_revision=newer["revision"],
+                                              operations=[{"op": "cancel", "task": newer["task_ids"][0]}])
+                            self.assertIs(manager.working_plan, plan)
+                        if case == "interaction changed":
+                            controller = self.runtime._interaction_controller
+                            other = type(controller)(controller.store, user_id=controller.user_id,
+                                workspace_id=controller.workspace_id, session_id=controller.session_id)
+                            original_commit = self.runtime.tasks.store.apply_working_plan_edit
+                            proposal = _initial_plan(next(item for item in FIXTURES
+                                                          if item["fixture_id"] == "bug_fix-3"))
+
+                            def with_new_approval(*args, **kwargs):
+                                self.assertIsNotNone(kwargs["expected_completed_plan"])
+                                other.propose_plan(proposal)
+                                return original_commit(*args, **kwargs)
+
+                            pending_patch = patch.object(self.runtime.tasks.store, "apply_working_plan_edit",
+                                                         side_effect=with_new_approval)
+                            pending_patch.start()
+                            self.addCleanup(pending_patch.stop)
+                        arguments = {**start, "expected_revision": 0} if case == "mixed arguments" else start
+                        call = ToolCall("follow-up", "update_plan", arguments)
+                    elif step == 4:
+                        reply = next(item for item in messages if isinstance(item, ToolReply)
+                                     and item.call_id == "follow-up")
+                        self.assertEqual(reply.is_error, not allowed, reply.output)
+                        if reply.is_error:
+                            if case == "durable stale plan":
+                                self.assertIn("Completed Working Plan changed", reply.output["text"])
+                            if case == "interaction changed":
+                                self.assertIn("Interaction state changed", reply.output["text"])
+                                pending_patch.stop()
+                            return ModelResponse(text="The inspection is complete.", finish_reason=FinishReason.FINAL)
+                        original = next(item for item in messages if isinstance(item, ModelResponse)
+                                        and any(call.id == "follow-up" for call in item.tool_calls))
+                        self.assertEqual(original.tool_calls[0].arguments, start)
+                        self.assertNotEqual(self.runtime.tasks.working_plan.id, inspected_plan)
+                        call = ToolCall("verify", "run_cmd", {"command": command})
+                    else:
+                        return ModelResponse(text="Verified the output.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                                         continuation=provider_continuation(provider, model, "fixture", {"id": call.id}))
+
+                tools = {"update_plan", "read_file", "read_tool_artifact"}
+                if case != "shell denied":
+                    tools.add("run_cmd")
+                provider = self.provider(respond, provider_base=OpenAIResponsesProvider)
+                if case == "fallback":
+                    wrapper = FallbackProvider.__new__(FallbackProvider)
+                    wrapper._primary = provider
+                    wrapper._fallbacks = [self.provider(lambda *_: self.fail("Changed a pinned Responses provider"))]
+                    provider = wrapper
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Inspect and verify."}],
+                                                  complexity="complex", permitted=tools)
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed", answer)
+                if allowed:
+                    check = turn.tool_records[-1]
+                    self.assertEqual(check["action"], "run_cmd")
+                    self.assertEqual(check["task_id"], self.runtime.tasks.working_plan.task_ids[0])
+                    self.assertTrue(check["success"])
+                else:
+                    self.assertEqual(self.runtime.tasks.working_plan.id, inspected_plan)
+                    self.assertEqual([record["action"] for record in turn.tool_records],
+                                     ["update_plan", "read_file", "update_plan"])
 
     def test_native_failed_verification_can_be_replaced_by_a_compact_command_check(self):
         import shlex

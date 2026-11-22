@@ -158,6 +158,7 @@ def _update_plan(self, arguments: dict):
                 reason=arguments.get("reason"),
                 strategy_validator=validate_strategy,
                 execution_validator=validate_file_execution,
+                expected_completed_plan=self.execution_context.native_completed_predecessor,
             )
             suggested = {operation["task"] for operation in arguments["operations"]
                          if operation.get("op") == "suggest_complete"}

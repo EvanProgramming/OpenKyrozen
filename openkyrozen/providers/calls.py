@@ -123,6 +123,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                          and registry.get_spec(item["name"]).capability in allowed}
         ordinary_plan_edit = False
         ordinary_followup = False
+        command_followup = False
         if "update_plan" in current_names and registry.get_spec("update_plan").source == "builtin":
             plan_tool = next(item for item in tools if item["name"] == "update_plan")
             schema = plan_tool["parameters"]
@@ -185,6 +186,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "In the same call, start the first task by its ref."
                 )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
+                alternatives = None
                 required = ["plan_id", "expected_revision", "operations"]
                 properties = {name: schema["properties"][name] for name in required}
                 properties["plan_id"] = {
@@ -230,21 +232,51 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         "Use the current pinned plan ID and revision and suggest_complete with the verified task IDs."
                     )
                     if ordinary_followup:
-                        required.remove("plan_id")
-                        properties["operations"]["items"] = {"anyOf": [
+                        creation_ops = [
                             item for item in variants
                             if item["properties"]["op"]["enum"][0] in {
-                                "add", "add_read_check", "add_command_check", "start", "suggest_complete",
+                                "add", "add_read_check", "add_command_check", "start",
                             }
-                        ]}
+                        ]
+                        from openkyrozen.agent.engine import _can_start_command_followup
+
+                        protocol_for = getattr(provider, "native_tool_protocol_for", None)
+                        command_followup = (callable(protocol_for) and protocol_for(messages) == "openai-responses"
+                                            and _can_start_command_followup(self, plan))
+                        if command_followup:
+                            alternatives = [
+                                {"type": "object", "additionalProperties": False,
+                                 "required": ["description", "command"], "properties": {
+                                     "description": {"type": "string", "minLength": 1},
+                                     "command": {"type": "string", "minLength": 1},
+                                 }},
+                                {"type": "object", "additionalProperties": False,
+                                 "required": ["expected_revision", "operations"], "properties": {
+                                     "expected_revision": {"type": "integer", "enum": [0]},
+                                     "operations": {**operations, "items": {"anyOf": creation_ops}},
+                                 }},
+                            ]
+                            plan_tool["description"] = (
+                                "For remaining work with a known test command, use only description and the exact "
+                                "foreground command to create and start one task. Do the file edit in the next "
+                                "permitted tool call, then run this command for verification. Keep file contents "
+                                "and edit arguments in those later tool calls. "
+                                + plan_tool["description"]
+                            )
+                        else:
+                            required.remove("plan_id")
+                            properties["operations"]["items"] = {"anyOf": [*creation_ops, confirm]}
                         plan_tool["description"] += (
-                            " If work from the original request remains, create a separate Working Plan. "
-                            "Omit plan_id, set expected_revision to 0, add tasks for the remaining work, "
-                            "and start the first task by its ref. Use add_command_check for command verification."
+                            " For a follow-up without the two-field command form, omit plan_id, set expected_revision "
+                            "to 0, add tasks for the remaining work, and start the first task by its ref."
+                            if command_followup else
+                            " If work remains, omit plan_id, set expected_revision to 0, add tasks, and start the "
+                            "first task by its ref. Use add_command_check for command verification."
                         )
-                plan_tool["parameters"] = {
-                    "type": "object", "additionalProperties": False, "required": required, "properties": properties,
-                }
+                projected = {"type": "object", "additionalProperties": False,
+                             "required": required, "properties": properties}
+                plan_tool["parameters"] = ({"type": "object", "anyOf": [*alternatives, projected]}
+                                           if alternatives else projected)
         history_only = {item["name"] for item in tools} - current_names
         marker = "## Current native tool availability\n"
         previous = list(messages)
@@ -264,8 +296,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                               "If explicitly asked to confirm the plan, use update_plan with the current IDs and revision. ",
         }.get(_native_tool_phase, "")
         if ordinary_followup:
-            phase_guidance += ("If the completed tasks covered only part of the original request, use update_plan "
-                               "at revision 0 with no plan_id to create and start a fresh plan for the remaining work. ")
+            if command_followup:
+                phase_guidance += ("For remaining work with a known test command, use update_plan with only "
+                                   "description and command. Make edits in later tool calls. ")
+            else:
+                phase_guidance += ("If the completed tasks covered only part of the original request, use update_plan "
+                                   "at revision 0 with no plan_id to create and start a fresh plan for the remaining work. ")
             from openkyrozen.agent.engine import _followup_workspace_tools
             followup_tools = _followup_workspace_tools(self)
             if followup_tools:

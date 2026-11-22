@@ -31,6 +31,17 @@ def _followup_workspace_tools(runtime):
                   and spec.source == "builtin" and spec.capability in allowed)
 
 
+def _can_start_command_followup(runtime, plan):
+    if plan is None or plan is not runtime.tasks.working_plan or plan.status != "completed":
+        return False
+    interaction = runtime._interaction_controller.state()
+    tasks = [task for task in runtime.tasks.tasks if task["id"] in plan.task_ids]
+    return (not any(interaction.get(key) for key in ("executing_plan", "pending_plan", "pending_question"))
+            and {task["id"] for task in tasks} == set(plan.task_ids)
+            and not any((task.get("checkpoint") or {}).get("strategic_plan") for task in tasks)
+            and "run_cmd" in _followup_workspace_tools(runtime))
+
+
 class AgentEngine:
     """Own the foreground turn lifecycle and select native or legacy transport."""
 
@@ -332,6 +343,10 @@ class AgentEngine:
                     tool_names.add("request_question")
             previous_replies = [messages[index] for index in previous_reply_indexes]
             _refresh_working_plan_context(runtime, messages)
+            provider = runtime.execution_context.provider or runtime.llm_provider
+            protocol_for = getattr(provider, "native_tool_protocol_for", None)
+            command_protocol = (native_tool_phase == "plan_completed" and callable(protocol_for)
+                                and protocol_for(messages) == "openai-responses")
             emitted_native_content = False
             emitted_native_text = False
 
@@ -571,7 +586,8 @@ class AgentEngine:
                       if selected_task_id and call.name not in _NATIVE_CONTROLS | {"update_plan"} else None}
                      for call in response.tool_calls]
             turn.tool_calls.extend(calls)
-            if native_tool_phase == "plan_active" and len(calls) == 1 and calls[0]["action"] == "update_plan":
+            if (native_tool_phase in {"plan_active", "plan_completed"}
+                    and len(calls) == 1 and calls[0]["action"] == "update_plan"):
                 calls = [{**calls[0], "native_plan_start": plan}]
 
             def record_native_call(call, receipt):
@@ -636,6 +652,12 @@ class AgentEngine:
             context = runtime.execution_context
             context.native_plan_active = native_tool_phase == "plan_active"
             context.native_plan_completed = completed_plan
+            if (command_protocol and len(calls) == 1 and calls[0]["action"] == "update_plan"
+                    and set(calls[0]["args"]) == {"description", "command"}):
+                manager = runtime.tasks
+                event_id = manager.store.current_interaction_event_id(
+                    user_id=manager.user_id, workspace_id=manager.workspace_id, session_id=manager.session_id)
+                context.native_completed_predecessor = (plan.id, plan.revision, event_id)
             try:
                 runtime._execute_tool_batch(
                     calls, operation_scope=operation_scope, successful_operations=successful_operations,
@@ -644,6 +666,7 @@ class AgentEngine:
             finally:
                 context.native_plan_active = False
                 context.native_plan_completed = False
+                context.native_completed_predecessor = None
             if turn.pending_interaction_reply:
                 final_text = turn.pending_interaction_reply
                 break

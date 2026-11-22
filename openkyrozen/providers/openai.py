@@ -315,6 +315,8 @@ class OpenAICompatProvider(LLMProvider):
 class OpenAIResponsesProvider(LLMProvider):
     """OpenAI's current Responses API, including event-based streaming."""
 
+    native_tool_protocol = "openai-responses"
+
     def __init__(self, config: ProviderConfig) -> None:
         super().__init__(config)
         try:

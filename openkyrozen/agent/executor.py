@@ -771,23 +771,34 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     expected_spec = self.tool_registry.specs.get(canonical)
     if (native_plan_start is not None and native_plan_start is self.tasks.working_plan
             and call_id_source == "native" and canonical == "update_plan" and expected_spec is not None
-            and expected_spec.source == "builtin" and isinstance(args, dict)
-            and set(args) == {"expected_revision", "operations"} and type(args["expected_revision"]) is int
-            and args["expected_revision"] == native_plan_start.revision
-            and isinstance(operations := args["operations"], list) and len(operations) == 1
-            and isinstance(operation := operations[0], dict) and set(operation) == {"op", "task"}
-            and operation["op"] == "start" and operation["task"] in native_plan_start.task_ids):
+            and expected_spec.source == "builtin" and isinstance(args, dict)):
         from openkyrozen.agent.plan_tools import _update_plan
 
         executor = expected_spec.executor
-        interaction = self._interaction_controller.state()
-        # The exact task and revision identify the ordinary plan even when the provider omits its ID.
         if (type(executor) is MethodType and executor.__self__ is self
-                and executor.__func__ is _update_plan.__tool_result_executor__
-                and not interaction.get("executing_plan") and not interaction.get("pending_plan")
-                and not any((task.get("checkpoint") or {}).get("strategic_plan")
-                            for task in self.tasks.tasks if task["id"] in native_plan_start.task_ids)):
-            args = {**args, "plan_id": native_plan_start.id}
+                and executor.__func__ is _update_plan.__tool_result_executor__):
+            if set(args) == {"description", "command"}:
+                from openkyrozen.agent.engine import _can_start_command_followup
+
+                predecessor = self.execution_context.native_completed_predecessor
+                if (predecessor is not None and predecessor[:2] == (native_plan_start.id, native_plan_start.revision)
+                        and _can_start_command_followup(self, native_plan_start)):
+                    args = {"expected_revision": 0, "operations": [
+                        {"op": "add_command_check", "ref": "followup", **args},
+                        {"op": "start", "task": "followup"},
+                    ]}
+            elif (native_plan_start.status == "active"
+                    and set(args) == {"expected_revision", "operations"} and type(args["expected_revision"]) is int
+                    and args["expected_revision"] == native_plan_start.revision
+                    and isinstance(operations := args["operations"], list) and len(operations) == 1
+                    and isinstance(operation := operations[0], dict) and set(operation) == {"op", "task"}
+                    and operation["op"] == "start" and operation["task"] in native_plan_start.task_ids):
+                # The exact task and revision identify the ordinary plan after an omitted ID.
+                interaction = self._interaction_controller.state()
+                if (not interaction.get("executing_plan") and not interaction.get("pending_plan")
+                        and not any((task.get("checkpoint") or {}).get("strategic_plan")
+                                    for task in self.tasks.tasks if task["id"] in native_plan_start.task_ids)):
+                    args = {**args, "plan_id": native_plan_start.id}
     if call_id_source == "native" and canonical == "discover_tools" and expected_spec is not None:
         from openkyrozen.agent.prompts import _discover_tools
         executor = expected_spec.executor
