@@ -316,7 +316,7 @@ class EventsRepository:
 
     def list_events(self, event_type: str | None = None, *, limit: int | None = 100,
                     workspace_id: str = "default", session_id: str | None = None,
-                    user_id: str | None = None) -> list[dict[str, Any]]:
+                    user_id: str | None = None, append_order: bool = False) -> list[dict[str, Any]]:
         clauses = ["workspace_id=?", "event_type NOT LIKE 'conversation.%'"]
         params: list[Any] = [workspace_id]
         if user_id is not None:
@@ -330,9 +330,10 @@ class EventsRepository:
             params.append(session_id)
         if limit is not None:
             params.append(max(1, min(limit, 10000)))
+        order = "rowid DESC" if append_order else "created_at DESC, rowid DESC"
         with self.database.connection() as db:
             rows = db.execute(
-                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, rowid DESC" + (" LIMIT ?" if limit is not None else ""),
+                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY {order}" + (" LIMIT ?" if limit is not None else ""),
                 params,
             ).fetchall()
         return [dict(row, payload=self.database._loads(row["payload"], {})) for row in rows]

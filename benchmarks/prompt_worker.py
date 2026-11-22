@@ -314,7 +314,7 @@ def _accepted_scope_preserved(history, accepted_fingerprints, accepted_plan, tas
 def _working_plan_edits(manager):
     """Count durable strategy changes after the initial plan, excluding task lifecycle."""
     scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
-             "session_id": manager.session_id, "limit": None}
+             "session_id": manager.session_id, "limit": None, "append_order": True}
     edits = []
     for event in reversed(manager.store.list_events(**scope)):
         # Transactional edits have no task ID. Task terminal events also report cancellation.

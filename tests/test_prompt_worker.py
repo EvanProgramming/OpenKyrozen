@@ -1,5 +1,8 @@
+from contextlib import closing
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from benchmarks.prompt_worker import _accepted_scope_preserved, _working_plan_edits
 
@@ -24,6 +27,24 @@ class PromptWorkerPlanEvidenceTests(unittest.TestCase):
         edits, revisions = _working_plan_edits(manager)
         self.assertEqual(edits[-1]["operations"], ["update", "start"])
         self.assertEqual(revisions, 1)
+
+    def test_plan_revision_evidence_follows_commit_order_when_the_clock_moves_back(self):
+        from openkyrozen.persistence.store import EventStore
+        from openkyrozen.tasks.engine import TaskManager
+
+        with TemporaryDirectory() as directory, closing(EventStore(Path(directory) / "tasks.sqlite3")) as store:
+            manager = TaskManager(store, workspace_id="project", session_id="clock-change")
+            with patch("openkyrozen.tasks.engine.utc_now", return_value="2026-11-22T20:00:01+00:00"):
+                plan = manager.edit_plan(expected_revision=0, operations=[
+                    {"op": "add_read_check", "ref": "read", "path": "notes.txt"},
+                ])
+            with patch("openkyrozen.tasks.engine.utc_now", return_value="2026-11-22T20:00:00+00:00"):
+                manager.edit_plan(plan_id=plan["plan_id"], expected_revision=plan["revision"], operations=[
+                    {"op": "start", "task": plan["task_ids"][0]},
+                ])
+            edits, revisions = _working_plan_edits(manager)
+            self.assertEqual([edit["revision"] for edit in edits], [1, 2])
+            self.assertEqual(revisions, 0)
 
     def test_missing_fingerprints_cannot_match_legacy_plan_events_or_tasks(self):
         plan = {"plan_id": "plan-1", "version": 1, "fingerprint": None}

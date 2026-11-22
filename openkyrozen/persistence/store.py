@@ -88,8 +88,11 @@ class EventStore:
         return self.deletion.delete_workspace(user_id=user_id, workspace_id=workspace_id,
                                               registry_workspace_id=registry_workspace_id)
 
-    def list_events(self, event_type: str | None=None, *, limit: int=100, workspace_id: str='default', session_id: str | None=None, user_id: str | None=None):
-        return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id, user_id=user_id)
+    def list_events(self, event_type: str | None = None, *, limit: int | None = 100,
+                    workspace_id: str = "default", session_id: str | None = None,
+                    user_id: str | None = None, append_order: bool = False):
+        return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id,
+                                       user_id=user_id, append_order=append_order)
 
     def list_interaction_events(self, *, workspace_id: str, session_id: str, user_id: str):
         return self.events.list_interaction_events(
