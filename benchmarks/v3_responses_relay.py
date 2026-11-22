@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import ClassVar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpx
 import requests
-from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from benchmarks.v3_matched import BudgetLedger
 
@@ -116,10 +116,30 @@ def _strict_wire_evidence(response_id, finish, arguments):
             "calls": [argument_wire_evidence(index, value) for index, value in sorted(arguments.items())]}
 
 
-def _connection_was_not_established(error: requests.RequestException) -> bool:
-    cause = error.args[0] if error.args else None
-    return (isinstance(error, requests.exceptions.ConnectTimeout)
-            or isinstance(cause, MaxRetryError) and isinstance(cause.reason, NewConnectionError))
+_UPSTREAM_ERRORS = (requests.RequestException, httpx.HTTPError)
+_CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
+def _upstream_chunks(response):
+    if not isinstance(response, httpx.Response):
+        yield from response.iter_content(chunk_size=4096)
+        return
+    from h2.exceptions import ProtocolError
+
+    try:
+        # Preserve each available SSE delta without buffering to a fixed chunk size.
+        yield from response.iter_bytes()
+    except ProtocolError as error:
+        raise httpx.RemoteProtocolError("invalid upstream HTTP/2 response body") from error
+
+
+def _http2_client(*, keepalive: int) -> httpx.Client:
+    return httpx.Client(
+        transport=httpx.HTTPTransport(http1=False, http2=True, limits=httpx.Limits(
+            max_connections=1, max_keepalive_connections=keepalive)),
+        trust_env=False,
+        timeout=httpx.Timeout(UPSTREAM_STREAM_SECONDS, connect=UPSTREAM_CONNECT_SECONDS),
+    )
 
 
 class ResponsesRelay:
@@ -146,9 +166,12 @@ class ResponsesRelay:
         if config.formal_fixed and (self.endpoint != "https://api.deepseek.com" or responses_policy is not None):
             raise ValueError("fixed DeepSeek protocol requires the pinned endpoint")
         self._upstream_session = None
+        self._stream_upstream_session = None
         if (self.endpoint == "https://api.deepseek.com" and
                 (config.reasoning_effort == "low" or getattr(responses_policy, "reasoning_effort", None) == "low")):
-            self._upstream_session = requests.Session()
+            self._upstream_session = _http2_client(keepalive=1)
+            # Closing after native terminal usage can precede HTTP/2 END_STREAM.
+            self._stream_upstream_session = _http2_client(keepalive=0)
         self.upstream_route = "/beta/chat/completions" if config.strict_chat else "/responses"
         if config.strict_chat:
             self.protocol = "strict-chat"
@@ -223,22 +246,23 @@ class ResponsesRelay:
         if self._upstream_session is not None:
             with self._request_lock:
                 self._upstream_session.close()
+                self._stream_upstream_session.close()
 
-    def _post_upstream(self, encoded: bytes, *, wants_stream: bool, row: dict) -> requests.Response:
+    def _post_upstream(self, encoded: bytes, *, wants_stream: bool, row: dict) -> requests.Response | httpx.Response:
         url = self.endpoint + self.upstream_route
         headers = {"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"}
-        session = self._upstream_session
+        session = self._stream_upstream_session if wants_stream else self._upstream_session
         if session is None:
             return requests.post(url, data=encoded, headers=headers, timeout=UPSTREAM_STREAM_SECONDS,
                                  allow_redirects=False, stream=wants_stream)
         session.cookies.clear()
+        request = session.build_request("POST", url, content=encoded, headers=headers)
         for attempt in range(2):
             try:
-                # Return upon receipt of headers. The JSON field still selects provider SSE.
-                return session.post(url, data=encoded, headers=headers, allow_redirects=False, stream=True,
-                                    timeout=(UPSTREAM_CONNECT_SECONDS, UPSTREAM_STREAM_SECONDS))
-            except requests.RequestException as error:
-                if attempt or not _connection_was_not_established(error):
+                # Return at the response headers. The JSON field still selects provider SSE.
+                return session.send(request, stream=True)
+            except _CONNECT_ERRORS:
+                if attempt:
                     raise
                 row["connect_retries"] = 1
 
@@ -428,6 +452,8 @@ class ResponsesRelay:
                        "reserved_rmb": str(quote),
                        "status": "unknown", "usage": None}
                 row.update(relay.config.journal_metadata())
+                if relay._upstream_session is not None:
+                    row["upstream_transport"] = "http2"
                 if actor_id is not None:
                     row['actor_id'] = actor_id
                 if policy is not None:
@@ -481,29 +507,31 @@ class ResponsesRelay:
                                 relay._selected_models[(actor_id, label)] = body['model']
                         try:
                             upstream = relay._post_upstream(encoded, wants_stream=wants_stream, row=row)
-                        except requests.RequestException as exc:
+                        except _UPSTREAM_ERRORS as exc:
                             relay.provider_error = f"upstream_transport_{type(exc).__name__}"
                             relay.budget.settle(attempt_id, None)
                             row["transport_error"] = type(exc).__name__
                             if relay._upstream_session is not None:
                                 row["transport_failure_phase"] = (
-                                    "connecting" if _connection_was_not_established(exc) else "before_response_headers")
+                                    "connecting" if isinstance(exc, _CONNECT_ERRORS) else "before_response_headers")
                             self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
                             return
                         row["http_status"] = upstream.status_code
+                        if isinstance(upstream, httpx.Response):
+                            row["http_version"] = upstream.http_version
                         if upstream.status_code != 200:
                             relay.budget.settle(attempt_id, None)
                             row["status"] = "unknown"
                             error_body = bytearray()
                             try:
-                                for chunk in upstream.iter_content(chunk_size=4096):
+                                for chunk in _upstream_chunks(upstream):
                                     if not chunk:
                                         continue
                                     error_body.extend(chunk[:MAX_ERROR_BODY_BYTES - len(error_body) + 1])
                                     if len(error_body) > MAX_ERROR_BODY_BYTES:
                                         error_body.clear()
                                         break
-                            except requests.RequestException:
+                            except _UPSTREAM_ERRORS:
                                 error_body.clear()
                             try:
                                 error_response = json.loads(error_body)
@@ -519,7 +547,10 @@ class ResponsesRelay:
                             return
                         if not wants_stream:
                             try:
-                                response_body = upstream.json()
+                                if isinstance(upstream, httpx.Response):
+                                    response_body = json.loads(b"".join(_upstream_chunks(upstream)))
+                                else:
+                                    response_body = upstream.json()
                             except ValueError:
                                 response_body = None
                             if not isinstance(response_body, dict):
@@ -561,7 +592,7 @@ class ResponsesRelay:
                     chat_invalid = False
                     chat_arguments = {}
                     chat_terminal_frame = None
-                    for chunk in upstream.iter_content(chunk_size=4096):
+                    for chunk in _upstream_chunks(upstream):
                         now = time.monotonic()
                         if not chunk:
                             continue
@@ -663,8 +694,8 @@ class ResponsesRelay:
                             row["upstream_wire"] = _strict_wire_evidence(
                                 chat_identity[0], chat_usage["choices"][0]["finish_reason"] if chat_usage else None,
                                 {index: "".join(parts) for index, parts in chat_arguments.items()})
-                except (requests.RequestException, OSError) as exc:
-                    if isinstance(exc, requests.RequestException):
+                except (*_UPSTREAM_ERRORS, OSError) as exc:
+                    if isinstance(exc, _UPSTREAM_ERRORS):
                         with relay._upstream_lock:
                             relay.provider_error = f"upstream_transport_{type(exc).__name__}"
                     if row["status"] == "unknown":

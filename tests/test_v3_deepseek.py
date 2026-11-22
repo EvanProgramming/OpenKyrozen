@@ -756,38 +756,61 @@ class DeepSeekBudgetTests(unittest.TestCase):
 
 
 class DeepSeekRelayTests(unittest.TestCase):
-    def test_low_transport_reuses_completed_http_connections_and_never_replays_dispatched_post(self):
+    def test_low_transport_reuses_complete_http2_json_and_isolates_early_stream_closes(self):
+        import socketserver
+        import h2.config
+        import h2.connection
+        import h2.events
+        import h2.settings
+
         from benchmarks import v3_deepseek as deepseek
         from benchmarks.v3_responses_relay import ResponsesRelay
 
         received = []
 
-        class Upstream(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
+        class Upstream(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.settimeout(5)
+                peer = h2.connection.H2Connection(h2.config.H2Configuration(client_side=False))
+                peer.initiate_connection()
+                peer.update_settings({h2.settings.SettingCodes.MAX_CONCURRENT_STREAMS: 1})
+                self.request.sendall(peer.data_to_send())
+                requests_by_stream = {}
+                while data := self.request.recv(65536):
+                    for event in peer.receive_data(data):
+                        stream_id = getattr(event, "stream_id", None)
+                        if isinstance(event, h2.events.RequestReceived):
+                            requests_by_stream[stream_id] = (dict(event.headers), bytearray())
+                        elif isinstance(event, h2.events.DataReceived):
+                            requests_by_stream[stream_id][1].extend(event.data)
+                            peer.acknowledge_received_data(event.flow_controlled_length, stream_id)
+                        elif isinstance(event, h2.events.StreamEnded):
+                            headers, encoded = requests_by_stream.pop(stream_id)
+                            body = json.loads(encoded)
+                            received.append((self.client_address[1], headers.get(b"cookie"), body))
+                            payload = {"model": "deepseek-flash", "status": "completed", "output": [],
+                                       "reasoning": {"effort": "low"}, "usage": {
+                                           "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
+                                           "input_tokens_details": {"cached_tokens": 0},
+                                           "output_tokens_details": {"reasoning_tokens": 0},
+                                       }}
+                            truncated = body["input"] == "disconnect"
+                            content_type = "text/event-stream" if body["stream"] else "application/json"
+                            peer.send_headers(stream_id, [(":status", "200"), ("content-type", content_type),
+                                                           ("set-cookie", "provider_session=ignore-me")])
+                            if truncated:
+                                peer.send_data(stream_id, b'data: {"type":"response.output_text.delta"}\n\n')
+                                self.request.sendall(peer.data_to_send())
+                                return
+                            encoded = json.dumps(payload).encode()
+                            if body["stream"]:
+                                terminal = {"type": "response.completed", "response": payload}
+                                encoded = b"data: " + json.dumps(terminal).encode() + b"\n\n"
+                            # The native completion can arrive before the HTTP/2 stream ends.
+                            peer.send_data(stream_id, encoded, end_stream=not body["stream"])
+                    self.request.sendall(peer.data_to_send())
 
-            def log_message(self, *_args):
-                pass
-
-            def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                received.append((self.client_address[1], self.headers.get("Cookie"), body))
-                if body["input"] == "disconnect":
-                    self.close_connection = True
-                    return
-                payload = json.dumps({"model": "deepseek-flash", "status": "completed", "output": [],
-                                      "reasoning": {"effort": "low"}, "usage": {
-                                          "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
-                                          "input_tokens_details": {"cached_tokens": 0},
-                                          "output_tokens_details": {"reasoning_tokens": 0},
-                                      }}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Set-Cookie", "provider_session=ignore-me")
-                self.end_headers()
-                self.wfile.write(payload)
-
-        upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+        upstream = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Upstream)
         server = threading.Thread(target=upstream.serve_forever, daemon=True)
         server.start()
         try:
@@ -796,24 +819,32 @@ class DeepSeekRelayTests(unittest.TestCase):
                                                 pricing=deepseek.DEEPSEEK_PRICING)
                 relay = ResponsesRelay(endpoint=deepseek.DEEPSEEK_ENDPOINT, api_key="fake", budget=ledger,
                                        config=deepseek.DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG)
-                relay.endpoint = f"http://127.0.0.1:{upstream.server_port}"
+                relay.endpoint = f"http://127.0.0.1:{upstream.server_address[1]}"
                 relay.start()
                 try:
                     headers = {"Authorization": f"Bearer {relay.client_key}"}
-                    def post(value):
+                    def post(value, *, stream=False):
                         return requests.post(relay.url + "/responses", headers=headers,
-                                             json={"input": value}, timeout=5)
+                                             json={"input": value, "stream": stream}, timeout=5)
                     self.assertEqual(post("first").status_code, 200)
                     self.assertEqual(post("second").status_code, 200)
-                    self.assertEqual(post("disconnect").status_code, 502)
+                    self.assertIn("response.completed", post("complete", stream=True).text)
+                    partial = post("disconnect", stream=True)
+                    self.assertIn("response.output_text.delta", partial.text)
+                    self.assertNotIn("response.completed", partial.text)
                     self.assertEqual(post("after disconnect").status_code, 503)
-                    self.assertEqual([body["input"] for _, _, body in received], ["first", "second", "disconnect"])
-                    self.assertEqual(len({port for port, _, _ in received}), 1)
+                    self.assertEqual([body["input"] for _, _, body in received],
+                                     ["first", "second", "complete", "disconnect"])
+                    self.assertEqual(received[0][0], received[1][0])
+                    self.assertEqual(len({port for port, _, _ in received}), 3)
                     self.assertTrue(all(cookie is None for _, cookie, _ in received))
                     self.assertTrue(all(body["reasoning"] == {"effort": "low"} for _, _, body in received))
-                    self.assertCountEqual([call["status"] for call in ledger.campaign_calls()],
-                                          ["settled", "settled", "unknown"])
-                    self.assertEqual(relay.rows[-1]["transport_failure_phase"], "before_response_headers")
+                    calls = ledger.campaign_calls()
+                    self.assertCountEqual([call["status"] for call in calls],
+                                          ["settled", "settled", "settled", "unknown"])
+                    self.assertTrue(all(call["upstream_transport"] == "http2" for call in calls))
+                    self.assertEqual(relay.rows[-1]["http_version"], "HTTP/2")
+                    self.assertEqual(relay.rows[-1]["transport_failure_phase"], "reading_response_body")
                 finally:
                     relay.close()
         finally:
@@ -835,11 +866,9 @@ class DeepSeekRelayTests(unittest.TestCase):
 
     def test_low_transport_retries_only_connections_that_did_not_send_a_request(self):
         from benchmarks.v3_deepseek import DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG
-        from urllib3.exceptions import MaxRetryError, NewConnectionError
+        import httpx
 
-        for error in (
-                requests.exceptions.ConnectTimeout(),
-                requests.exceptions.ConnectionError(MaxRetryError(None, "/responses", NewConnectionError(None, "DNS")))):
+        for error in (httpx.ConnectTimeout("timeout"), httpx.ConnectError("DNS")):
             with self.subTest(error=type(error).__name__):
                 self._assert_formal_responses_smoke(DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG, connect_error=error)
 
@@ -877,7 +906,7 @@ class DeepSeekRelayTests(unittest.TestCase):
                 self.assertEqual(json.loads(reply["output"]), {"value": value})
                 output = [{"type": "message", "role": "assistant",
                            "content": [{"type": "output_text", "text": value}]}]
-            return Mock(status_code=200, **{"json.return_value": {
+            reply = {
                 "id": f"resp_{len(bodies)}", "model": "deepseek-flash",
                 "status": "completed", "output": output,
                 "reasoning": {"effort": reported_effort or config.reasoning_effort},
@@ -886,7 +915,11 @@ class DeepSeekRelayTests(unittest.TestCase):
                     "input_tokens_details": {"cached_tokens": 2},
                     "output_tokens_details": {"reasoning_tokens": 2},
                 },
-            }})
+            }
+            if config.reasoning_effort == "low":
+                import httpx
+                return httpx.Response(200, json=reply, extensions={"http_version": b"HTTP/2"})
+            return Mock(status_code=200, **{"json.return_value": reply})
 
         with tempfile.TemporaryDirectory() as directory:
             ledger = v3_matched.BudgetLedger(Path(directory) / "budget.sqlite", limit_rmb="15",
@@ -898,7 +931,9 @@ class DeepSeekRelayTests(unittest.TestCase):
             relay.start()
             try:
                 if config.reasoning_effort == "low":
-                    transport = patch.object(relay._upstream_session, "post", side_effect=upstream)
+                    def send(request, **_options):
+                        return upstream(str(request.url), data=request.content)
+                    transport = patch.object(relay._upstream_session, "send", side_effect=send)
                 else:
                     transport = patch("benchmarks.v3_responses_relay.requests", post=upstream)
                 with transport:
