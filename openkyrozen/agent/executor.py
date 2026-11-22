@@ -962,7 +962,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )
-    matching_tasks = (active_task,) if local_scope and explicit_task_id and receipt.action == "read_file" else task_manager.tasks
+    matching_tasks = ((active_task,) if local_scope and explicit_task_id and receipt.action in {"read_file", "run_cmd"}
+                      else task_manager.tasks)
     legacy_contract = any(
         task.get("status") in {"pending", "running"}
         and task_manager._dependencies_succeeded(task, task_manager.tasks)
@@ -997,6 +998,19 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
                 whole_read_args = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
         else:
             criterion_status = "unavailable"
+    failed_command_exit_code = None
+    if (local_scope and explicit_task_id and receipt.authorized and receipt.call_id_source == "native"
+            and receipt.tool_source == "builtin" and receipt.action == "run_cmd" and not receipt.success
+            and receipt.failure == "command_failed" and verification.get("method") == "command_exit_status"
+            and not (receipt.arguments or {}).get("background")):
+        criteria = active_task["acceptance"]
+        checkpoint = active_task.get("checkpoint") or {}
+        if (len(criteria) == 1 and isinstance(criterion := criteria[0], dict)
+                and criterion.get("action") == "run_cmd" and criterion.get("args") == matching_args
+                and checkpoint.get("native_execution_selected") and not checkpoint.get("strategic_plan")
+                and (not checkpoint.get("action") or (checkpoint["action"] == "run_cmd"
+                    and checkpoint.get("args") == matching_args))):
+            failed_command_exit_code = (verification.get("observed") or {}).get("exit_code")
     evidence = {} if not reconcile_locally or receipt.action in TOOLS or not should_reconcile else task_manager.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
         args_projection=receipt_projection["args"],
@@ -1004,7 +1018,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
         verification_status=criterion_status, verification_result=read_content,
-        whole_read_args=whole_read_args,
+        whole_read_args=whole_read_args, failed_command_exit_code=failed_command_exit_code,
     )
     task_id = evidence.get("task_id") if reconcile_locally else explicit_task_id
     effective_acceptance = evidence.get("acceptance") or (
@@ -1013,7 +1027,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     if task_id and reconcile_locally:
         task = next((item for item in task_manager.tasks if item["id"] == task_id), None)
         checkpoint = (task or {}).get("checkpoint") or {}
-        if task and not checkpoint.get("action") and not checkpoint.get("strategic_plan"):
+        if (task and not checkpoint.get("action") and not checkpoint.get("strategic_plan")
+                and "failed_command_exit_code" not in evidence):
             task_manager.update_checkpoint(task_id, {"action": receipt.action, "args": receipt_projection["args"]})
     if task_id and reconcile_locally and receipt.success and effective_acceptance:
         task = next((item for item in task_manager.tasks if item["id"] == task_id), None)

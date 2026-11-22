@@ -366,6 +366,58 @@ class NativeContextTests(unittest.TestCase):
         self.assertEqual(len(provider.requests), 6)
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
 
+    def test_native_failed_verification_can_be_replaced_by_a_compact_command_check(self):
+        import shlex
+
+        python = shlex.quote(sys.executable)
+        original = {"command": f"{python} -c 'raise SystemExit(7)' #" + "x" * 1200}
+        corrected = {"command": f"{python} -c 'print(42)'"}
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            plan = self.runtime.tasks.working_plan
+            tool = next(item for item in provider.tool_requests[-1] if item["name"] == "update_plan")
+            schema = tool["parameters"]["properties"]["operations"]["items"]
+            choices = schema.get("anyOf", [schema])
+            operations = {item["properties"]["op"]["enum"][0] for item in choices}
+            self.assertEqual("replace_command_check" in operations, step == 3)
+            if step == 1:
+                call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                    {"op": "add", "ref": "verify", "task": {"description": "Verify behavior", "acceptance": [
+                        {"criterion": "Command succeeds", "verification": {
+                            "action": "run_cmd", "arguments": original}}]}},
+                    {"op": "start", "task": "verify"},
+                ]})
+            elif step == 2:
+                call = ToolCall("failed-check", "run_cmd", original)
+            elif step == 3:
+                failed = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "failed-check")
+                self.assertTrue(failed.is_error)
+                self.assertEqual(self.runtime.tasks.tasks[0]["evidence"][-1]["failed_command_exit_code"], 7)
+                self.assertNotIn("args", self.runtime.tasks.tasks[0]["checkpoint"])
+                call = ToolCall("replace", "update_plan", {"plan_id": plan.id, "expected_revision": plan.revision,
+                    "operations": [{"op": "replace_command_check", "task": plan.task_ids[0], "ref": "retry",
+                                    "command": corrected["command"]}]})
+            elif step == 4:
+                reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "replace")
+                self.assertFalse(reply.is_error, reply.output)
+                self.assertEqual(self.runtime.tasks.execution_task_id, plan.task_ids[-1])
+                call = ToolCall("verified-check", "run_cmd", corrected)
+            else:
+                return ModelResponse(text="Verified the corrected command.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        provider = self.provider(respond)
+        answer, turn, _ = self.run_native(
+            provider, [{"role": "user", "content": "Verify the workspace behavior."}],
+            complexity="complex", permitted=self.runtime._permitted_tool_names())
+        self.assertIn("Verified the corrected command.", answer)
+        self.assertEqual(turn.runtime_status, "completed", answer)
+        self.assertFalse(turn.tool_records[1]["success"])
+        self.assertEqual(len(provider.requests), 5)
+        self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+
     def test_real_plan_gate_expansion_read_and_completed_confirmation_have_current_guidance(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for streaming in (False, True):

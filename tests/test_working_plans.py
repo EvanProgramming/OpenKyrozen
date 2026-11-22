@@ -1,6 +1,7 @@
 from __future__ import annotations
 from contextlib import ExitStack, closing
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -123,6 +124,52 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(tasks[combined]["checkpoint"]["supersedes"], [one, two])
             self.assertEqual(tasks[combined]["checkpoint"]["superseded_by"], [corrected])
             self.assertEqual(tasks[corrected]["checkpoint"]["supersedes"], [combined])
+
+    def test_replace_command_check_keeps_old_receipt_and_starts_the_corrected_check(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
+                                  workspace_id="project", session_id="replace-command")
+            original = {"action": "run_cmd", "arguments": {"command": "python -m pytest", "cwd": "tests"}}
+            first = manager.edit_plan(expected_revision=0, operations=[
+                {"op": "add", "ref": "test", "task": {
+                    "description": "Check the original suite",
+                    "acceptance": [{"criterion": "Tests pass", "verification": original}],
+                    "execution": original, "priority": 2}},
+                {"op": "add", "ref": "after", "task": {
+                    "description": "Use verified outputs", "acceptance": ["ready"], "dependencies": ["test"]}},
+                {"op": "start", "task": "test"},
+            ])
+            source_id = first["references"]["test"]
+            operation = {"op": "replace_command_check", "task": source_id, "ref": "corrected",
+                         "command": "python -m unittest"}
+            edit = {"plan_id": first["plan_id"], "expected_revision": 1, "operations": [operation]}
+            with self.assertRaises(ValueError):
+                manager.edit_plan(**edit)
+            self.assertEqual(manager.execution_task_id, source_id)
+            old_arguments = '{"command":"python -m pytest","cwd":"tests"}'
+            manager.record_evidence(task_id=source_id, action="run_cmd", args=old_arguments,
+                                    args_fingerprint=hashlib.sha256(old_arguments.encode()).hexdigest(),
+                                    result="No module named pytest", success=False, receipt_id="failed-check",
+                                    failed_command_exit_code=1)
+            revised = manager.edit_plan(**edit)
+
+            tasks = {item["id"]: item for item in revised["tasks"]}
+            corrected = revised["references"]["corrected"]
+            replacement = tasks[corrected]
+            self.assertEqual(revised["revision"], 2)
+            self.assertEqual(manager.execution_task_id, corrected)
+            self.assertEqual(tasks[source_id]["status"], "cancelled")
+            self.assertEqual(tasks[source_id]["evidence"][0]["receipt_id"], "failed-check")
+            self.assertEqual(tasks[source_id]["checkpoint"]["superseded_by"], [corrected])
+            self.assertEqual(tasks[first["references"]["after"]]["dependencies"], [corrected])
+            self.assertEqual(replacement["priority"], 2)
+            self.assertEqual(replacement["evidence"], [])
+            new_arguments = '{"command":"python -m unittest","cwd":"tests"}'
+            self.assertEqual(replacement["acceptance"][0]["args"], new_arguments)
+            self.assertEqual(replacement["checkpoint"]["args"], new_arguments)
+            with self.assertRaisesRegex(ValueError, "revision changed"):
+                manager.edit_plan(**edit)
+            self.assertEqual(manager.execution_task_id, corrected)
 
     def test_invalid_split_rolls_back_all_supersession_changes(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:

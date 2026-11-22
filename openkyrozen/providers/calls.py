@@ -132,17 +132,30 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != plan.id
             ordinary_followup = (_native_tool_phase == "plan_completed" and not accepted
                                  and not interaction.get("pending_plan"))
+            can_replace_command = (
+                _native_tool_phase == "plan_active" and plan is not None and not accepted
+                and not interaction.get("pending_plan") and "run_cmd" in current_names and any(
+                    task["id"] in plan.task_ids and task["status"] == "running"
+                    and (task.get("evidence") or [{}])[-1].get("failed_command_exit_code") is not None
+                    for task in self.tasks.tasks
+                )
+            )
             for shape in (schema, *schema.get("anyOf", ())):
                 operations = shape.get("properties", {}).get("operations")
                 if operations is None:
                     continue
+                if not can_replace_command:
+                    operations["items"]["anyOf"] = [
+                        item for item in operations["items"]["anyOf"]
+                        if item["properties"]["op"]["enum"] != ["replace_command_check"]
+                    ]
                 variants = operations["items"]["anyOf"]
                 if ordinary_plan_edit:
                     for operation in variants:
                         operation["properties"].pop("anchor", None)
                 else:
                     operations["items"]["anyOf"] = [item for item in variants
-                        if item["properties"]["op"]["enum"] != ["add_read_check"]]
+                        if item["properties"]["op"]["enum"][0] not in {"add_read_check", "replace_command_check"}]
             if _native_tool_phase == "plan_required":
                 operations = schema["properties"]["operations"]
                 creation_ops = [item for item in operations["items"]["anyOf"]
@@ -176,6 +189,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         "bind a run_cmd check that exits zero only when the expected failure is observed. "
                         if ordinary_plan_edit else "Preserve approved criteria and request renewed approval for material changes. "
                     )
+                    if can_replace_command:
+                        criterion_guidance += (
+                            "If the selected verification command needs correction, use replace_command_check "
+                            "with task, ref and the corrected command. It starts a new task and preserves the "
+                            "failed receipt. Update is for unstarted work. "
+                        )
                     plan_tool["description"] = (
                         "Revise the current Working Plan using its pinned ID and revision. "
                         f"{criterion_guidance}Use exact tool arguments for typed verification. "

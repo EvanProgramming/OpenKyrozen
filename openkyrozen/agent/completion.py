@@ -72,6 +72,34 @@ def _corrected_plan_validation(manager, record, later_records, turn_id):
     return False
 
 
+def _verified_command_replacement(manager, record, later_records):
+    verification = record.get("verification") or {}
+    if (record.get("action") != "run_cmd" or record.get("failure") != "command_failed"
+            or record.get("authorized") is not True or record.get("call_id_source") != "native"
+            or record.get("success") is not False or verification.get("status") != "failed"
+            or verification.get("method") != "command_exit_status" or not record.get("receipt_id")):
+        return False
+    scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id, "session_id": manager.session_id}
+    if any(record.get(key) != value for key, value in scope.items()) or not record.get("plan_id"):
+        return False
+    tasks = {item["id"]: item for item in manager.tasks if item.get("plan_id") == record["plan_id"]}
+    for later in later_records:
+        verification = later.get("verification") or {}
+        if (later.get("action") != "run_cmd" or later.get("success") is not True
+                or later.get("authorized") is not True or later.get("call_id_source") != "native"
+                or later.get("plan_id") != record["plan_id"]
+                or verification.get("method") != "command_exit_status" or verification.get("status") != "verified"
+                or any(later.get(key) != value for key, value in scope.items())):
+            continue
+        replacement = tasks.get(later.get("task_id")) or {}
+        replaced = (replacement.get("checkpoint") or {}).get("replaced_command_receipts", ())
+        if (replacement.get("status") == "succeeded" and record["receipt_id"] in replaced
+                and any(item.get("receipt_id") == later.get("receipt_id") and item.get("acceptance_ids")
+                        for item in replacement.get("evidence", ()))):
+            return True
+    return False
+
+
 def _complete_turn(self, turn):
     from openkyrozen.agent.delegation import TERMINAL
     coordinator = self.subagent_manager.coordinator
@@ -181,6 +209,8 @@ def _complete_turn(self, turn):
         if _replaced_artifact_lookup(getattr(self.tasks, "working_plan", None), record, later_records):
             continue
         if _corrected_plan_validation(self.tasks, record, later_records, self._conversation_turn_id.get()):
+            continue
+        if _verified_command_replacement(self.tasks, record, later_records):
             continue
         failed_verification = verification.get("status") == "failed"
         effect_action = (record.get("action") in {"write_file", "edit_file", "apply_patch"}

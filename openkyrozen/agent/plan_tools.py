@@ -129,6 +129,11 @@ def _update_plan(self, arguments: dict):
                 if actions != {"add", "start"}:
                     raise ValueError("A follow-up plan requires add and start operations in the same call")
         if operations is not None:
+            if any(isinstance(op, dict) and op.get("op") == "replace_command_check" for op in operations):
+                interaction = self._interaction_controller.state()
+                if interaction.get("executing_plan") or interaction.get("pending_plan"):
+                    return tool_failure("permission_denied",
+                                        "Command checks cannot be replaced during a Strategic Plan or its approval.")
             result = self.tasks.update_plan(
                 complexity=arguments.get("complexity"), plan_id=arguments.get("plan_id"),
                 expected_revision=arguments["expected_revision"], operations=arguments["operations"],
