@@ -17,7 +17,9 @@ import sqlite3
 import secrets
 
 from benchmarks.v3_matched import BudgetLedger, Pricing, _picormb
-from benchmarks.v3_responses_relay import DeepSeekResponsesRelayConfig, RelayConfig, StrictChatRelayConfig
+from benchmarks.v3_responses_relay import (
+    DeepSeekLowResponsesRelayConfig, DeepSeekResponsesRelayConfig, RelayConfig, StrictChatRelayConfig,
+)
 from benchmarks.v3_panstar import PanstarPolicy, native_usage
 
 DEEPSEEK_ENDPOINT = "https://api.deepseek.com"
@@ -40,7 +42,9 @@ DEEPSEEK_RELAY_CONFIG = RelayConfig(
 )
 DEEPSEEK_STRICT_RELAY_CONFIG = StrictChatRelayConfig(**asdict(DEEPSEEK_RELAY_CONFIG))
 DEEPSEEK_RESPONSES_RELAY_CONFIG = DeepSeekResponsesRelayConfig(**asdict(DEEPSEEK_RELAY_CONFIG))
-DEEPSEEK_FIXED_CONFIGS = (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG, DEEPSEEK_RESPONSES_RELAY_CONFIG)
+DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG = DeepSeekLowResponsesRelayConfig(**asdict(DEEPSEEK_RELAY_CONFIG))
+DEEPSEEK_FIXED_CONFIGS = (DEEPSEEK_RELAY_CONFIG, DEEPSEEK_STRICT_RELAY_CONFIG,
+                          DEEPSEEK_RESPONSES_RELAY_CONFIG, DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG)
 PRO_MODEL = "deepseek-v4-pro"
 MODEL_ROUTING_ARMS = frozenset({"routing-model-auto", "routing-model-simple"})
 _PRO_RATES = {"input_per_million": "9", "output_per_million": "27",
@@ -454,23 +458,32 @@ class DeepSeekRoutingPolicy(PanstarPolicy):
     endpoint = DEEPSEEK_ENDPOINT
     paid_fx = None
 
-    def __init__(self, *, price_date=None):
+    def __init__(self, *, price_date=None, reasoning_effort=None):
         from datetime import datetime, timezone
+        if reasoning_effort not in (None, "low"):
+            raise ValueError("unsupported DeepSeek model routing reasoning effort")
+        self.reasoning_effort = reasoning_effort
         self.price_date = price_date or datetime.now(timezone.utc).date().isoformat()
         self.role_models = {"simple": DEEPSEEK_RELAY_CONFIG.model, "complex": PRO_MODEL}
         self.pricing = DEEPSEEK_UNLIMITED_PRICING
         self.billing_record = self.billing_proof_sha256 = None
 
     def identity(self):
-        return {"provider": self.provider, "service": "DeepSeek official", "protocol": "openai-responses",
-                "model_main": "auto", "role_models": dict(self.role_models), "price_date": self.price_date,
-                "pricing_sha256": self.pricing.sha256, "phase": "model_routing"}
+        identity = {"provider": self.provider, "service": "DeepSeek official", "protocol": "openai-responses",
+                    "model_main": "auto", "role_models": dict(self.role_models), "price_date": self.price_date,
+                    "pricing_sha256": self.pricing.sha256, "phase": "model_routing"}
+        if self.reasoning_effort is not None:
+            identity["reasoning_effort"] = self.reasoning_effort
+        return identity
 
     def served_identity(self, model, served_model):
         return served_model_matches(model, served_model)
 
     def validate_body(self, body):
-        return self._validate_text_body(body, self.role_models.values(), reasoning_text=True)
+        result = self._validate_text_body(body, self.role_models.values(), reasoning_text=True)
+        if self.reasoning_effort is not None:
+            result["reasoning"] = {"effort": self.reasoning_effort}
+        return result
 
     def response_usage(self, model, response):
         if deepseek_usage(response) is None:
@@ -480,9 +493,14 @@ class DeepSeekRoutingPolicy(PanstarPolicy):
     def request_metadata(self, model, arm):
         if arm not in MODEL_ROUTING_ARMS or (arm == "routing-model-simple" and model == PRO_MODEL):
             raise ValueError("model routing request is outside its assigned model variant")
-        return {**self.metadata(model), "arm": arm}
+        metadata = {**self.metadata(model), "arm": arm}
+        if self.reasoning_effort is not None:
+            metadata["reasoning_effort"] = self.reasoning_effort
+        return metadata
 
     def accepts_call(self, call):
+        if call.get("reasoning_effort") != self.reasoning_effort:
+            return False
         try:
             self.request_metadata(call.get("model"), call.get("arm"))
         except ValueError:
@@ -1053,9 +1071,13 @@ def main() -> None:
                         help="Cumulative cap in CNY up to 15, or explicit 'unlimited' with the full ledger.")
     parser.add_argument("--responses", action="store_true",
                         help="Use the fixed Flash Responses transport for a fresh campaign.")
+    parser.add_argument("--reasoning-effort", choices=("high", "low"), default="high",
+                        help="Provider reasoning effort for the fixed Flash Responses transport.")
     parser.add_argument("--planning-preflight-only", action="store_true",
                         help="Run both protected preflights, including bug_fix-1 (up to 16 requests), and stop before the formal cohort.")
     args = parser.parse_args()
+    if args.reasoning_effort == "low" and not args.responses:
+        parser.error("--reasoning-effort low requires --responses")
     from benchmarks.v3_matched_live import _source_snapshot, run
     from scripts.publish_v3_preview import _verify_candidate_signature
     if _source_snapshot(args.source.resolve()) != args.candidate_sha:
@@ -1072,7 +1094,10 @@ def main() -> None:
             raise ValueError("invalid cumulative DeepSeek cap") from None
         if not limit.is_finite() or not 0 < limit <= 15 or exposure.total_cny > limit:
             raise ValueError("the cumulative capped DeepSeek campaign must fit within 15 CNY")
-    relay_config = DEEPSEEK_RESPONSES_RELAY_CONFIG if args.responses else DEEPSEEK_STRICT_RELAY_CONFIG
+    relay_config = DEEPSEEK_STRICT_RELAY_CONFIG
+    if args.responses:
+        relay_config = (DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG if args.reasoning_effort == "low"
+                        else DEEPSEEK_RESPONSES_RELAY_CONFIG)
     report = run(source=args.source, repo=args.repo, output=args.output, budget_path=args.budget_db,
                  limit_cny=args.limit_cny, prior_hold_cny=str(exposure.total_cny),
                  prior_hold_records=exposure.records,

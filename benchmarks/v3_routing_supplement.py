@@ -545,10 +545,11 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
                                    if core.get('relay_config') == asdict(item)), DEEPSEEK_RELAY_CONFIG)
         if provider_policy is None:
             relay_config = fixed_relay_config
-        fixed_protocol = fixed_relay_config.journal_protocol
-        if origin_policy is None and any(call.get('protocol') != fixed_protocol
+        if origin_policy is None and any(not fixed_relay_config.accepts_journal_call(call)
                                          for call in _attempt_calls(original_attempts)):
             raise ValueError('fixed-model origin includes a different provider protocol')
+        if deepseek_model_stage and provider_policy.reasoning_effort != asdict(fixed_relay_config).get('reasoning_effort'):
+            raise ValueError('DeepSeek model routing must retain the fixed-model reasoning effort')
         if origin_policy is None and config[1] is None:
             core_budget_record=core.get('budget',{})
             if (core_budget_record.get('currency')!='CNY' or 'limit_cny' not in core_budget_record
@@ -674,7 +675,7 @@ def run(*,source,repo,core_output,core_budget,output,budget_path,provider_policy
         if len(set(keys))!=len(keys) or any((f,r,'routing-'+v) not in expected for f,r,v in keys):
             raise ValueError('duplicate or foreign supplemental cells')
         calls=native_calls if native_calls is not None else budget.campaign_calls()
-        if provider_policy is None and any(call.get('protocol') != fixed_protocol for call in calls):
+        if provider_policy is None and any(not fixed_relay_config.accepts_journal_call(call) for call in calls):
             raise ValueError('fixed-model supplement includes a different provider protocol')
         if any(call['attempt_id'] not in original_ids and ((call.get('fixture_id'),call.get('repeat'),call.get('arm')) not in expected
                 or (not provider_policy.accepts_call(call) if provider_policy is not None else

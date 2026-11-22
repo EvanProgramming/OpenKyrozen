@@ -758,6 +758,18 @@ class DeepSeekBudgetTests(unittest.TestCase):
 class DeepSeekRelayTests(unittest.TestCase):
     def test_formal_responses_smoke_pins_thinking_and_retains_continuation_and_ledger_provenance(self):
         from benchmarks import v3_deepseek as deepseek
+
+        for config in (deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG, deepseek.DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG):
+            with self.subTest(effort=config.reasoning_effort):
+                self._assert_formal_responses_smoke(config)
+
+    def test_low_effort_response_mismatch_stops_smoke_and_keeps_settled_cost(self):
+        from benchmarks.v3_deepseek import DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG
+
+        self._assert_formal_responses_smoke(DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG, reported_effort="high")
+
+    def _assert_formal_responses_smoke(self, config, *, reported_effort=None):
+        from benchmarks import v3_deepseek as deepseek
         from benchmarks.v3_responses_relay import ResponsesRelay
         from unittest.mock import Mock, patch
 
@@ -769,7 +781,7 @@ class DeepSeekRelayTests(unittest.TestCase):
             self.assertEqual(url, deepseek.DEEPSEEK_ENDPOINT + "/responses")
             body = json.loads(data)
             bodies.append(body)
-            self.assertEqual(body["reasoning"], {"effort": "high"})
+            self.assertEqual(body["reasoning"], {"effort": config.reasoning_effort})
             self.assertEqual(body["model"], "deepseek-flash")
             self.assertEqual(body["max_output_tokens"], 4096)
             tool, = body["tools"]
@@ -789,7 +801,9 @@ class DeepSeekRelayTests(unittest.TestCase):
                            "content": [{"type": "output_text", "text": value}]}]
             return Mock(status_code=200, **{"json.return_value": {
                 "id": f"resp_{len(bodies)}", "model": "deepseek-flash",
-                "status": "completed", "output": output, "usage": {
+                "status": "completed", "output": output,
+                "reasoning": {"effort": reported_effort or config.reasoning_effort},
+                "usage": {
                     "input_tokens": 10, "output_tokens": 5, "total_tokens": 15,
                     "input_tokens_details": {"cached_tokens": 2},
                     "output_tokens_details": {"reasoning_tokens": 2},
@@ -799,7 +813,6 @@ class DeepSeekRelayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ledger = v3_matched.BudgetLedger(Path(directory) / "budget.sqlite", limit_rmb="15",
                                             pricing=deepseek.DEEPSEEK_PRICING)
-            config = deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG
             with self.assertRaises(ValueError):
                 ResponsesRelay(endpoint="https://wrong.invalid", api_key="offline", budget=ledger, config=config)
             relay = ResponsesRelay(endpoint=deepseek.DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
@@ -807,16 +820,48 @@ class DeepSeekRelayTests(unittest.TestCase):
             relay.start()
             try:
                 with patch("benchmarks.v3_responses_relay.requests", post=upstream):
-                    self.assertTrue(deepseek.run_smoke(relay, "candidate"))
+                    self.assertEqual(deepseek.run_smoke(relay, "candidate"), reported_effort is None)
                 calls = ledger.campaign_calls()
+                if reported_effort is not None:
+                    call, = calls
+                    self.assertEqual(call["status"], "settled")
+                    self.assertGreater(Decimal(call["actual_rmb"]), 0)
+                    self.assertEqual(relay.provider_error, "upstream_reasoning_effort_mismatch")
+                    return
                 self.assertEqual(len(calls), 2)
                 self.assertEqual(set(relay.smoke_verified_attempt_ids), {call["attempt_id"] for call in calls})
                 for call in calls:
-                    self.assertEqual(call["protocol"], "deepseek-responses-flash")
+                    self.assertEqual(call["protocol"], config.journal_protocol)
+                    self.assertTrue(config.accepts_journal_call(call))
+                    if config.reasoning_effort == "low":
+                        self.assertEqual(call["reasoning_effort"], "low")
+                        for incorrect in (None, "high", "max"):
+                            self.assertFalse(config.accepts_journal_call(dict(call, reasoning_effort=incorrect)))
+                    else:
+                        self.assertNotIn("reasoning_effort", call)
                     self.assertEqual(call["status"], "settled")
                     self.assertEqual(call["reserved_rmb"], "2.032768")
             finally:
                 relay.close()
+
+    def test_model_routing_pins_low_for_both_roles_and_validates_journal(self):
+        from benchmarks.v3_deepseek import DeepSeekRoutingPolicy
+
+        policy = DeepSeekRoutingPolicy(reasoning_effort="low")
+        self.assertEqual(policy.identity()["reasoning_effort"], "low")
+        for model in policy.role_models.values():
+            for requested in ("high", "max"):
+                with self.subTest(model=model, requested=requested):
+                    body = {"model": model, "input": "hello", "reasoning": {"effort": requested}}
+                    self.assertEqual(policy.validate_body(body)["reasoning"], {"effort": "low"})
+                    self.assertEqual(body["reasoning"]["effort"], requested)
+            call = dict(policy.request_metadata(model, "routing-model-auto"), max_output_tokens=4096,
+                        protocol="openai-responses", status="unknown")
+            self.assertEqual(call["reasoning_effort"], "low")
+            self.assertTrue(policy.accepts_call(call))
+            self.assertFalse(policy.accepts_call(dict(call, reasoning_effort="max")))
+            del call["reasoning_effort"]
+            self.assertFalse(policy.accepts_call(call))
 
     def test_formal_responses_withholds_stream_terminal_until_usage_and_model_are_verified(self):
         from benchmarks import v3_deepseek as deepseek
@@ -1037,14 +1082,22 @@ class DeepSeekRunnerTests(unittest.TestCase):
                 self.assertEqual(runner.call_args.kwargs['limit_cny'], '15')
                 self.assertEqual(runner.call_args.kwargs['endpoint'], 'https://api.deepseek.com')
                 self.assertEqual(runner.call_args.kwargs['relay_config'], deepseek.DEEPSEEK_STRICT_RELAY_CONFIG)
-            with patch('sys.argv', argv + ['--responses']), \
-                    patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
-                    patch('scripts.publish_v3_preview._verify_candidate_signature'), \
-                    patch('benchmarks.v3_matched_live.run', return_value={'summary': summary}) as runner, \
-                    patch('builtins.print'):
-                with self.assertRaises(SystemExit):
+            with patch('sys.argv', argv + ['--reasoning-effort', 'low']), patch('sys.stderr'), \
+                    patch('benchmarks.v3_matched_live.run') as runner:
+                with self.assertRaises(SystemExit) as result:
                     deepseek.main()
-                self.assertEqual(runner.call_args.kwargs['relay_config'], deepseek.DEEPSEEK_RESPONSES_RELAY_CONFIG)
+                self.assertEqual(result.exception.code, 2)
+                runner.assert_not_called()
+            for effort, flags in (('high', []), ('low', ['--reasoning-effort', 'low'])):
+                with self.subTest(effort=effort), patch('sys.argv', argv + ['--responses', *flags]), \
+                        patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \
+                        patch('scripts.publish_v3_preview._verify_candidate_signature'), \
+                        patch('benchmarks.v3_matched_live.run', return_value={'summary': summary}) as runner, \
+                        patch('builtins.print'):
+                    with self.assertRaises(SystemExit) as result:
+                        deepseek.main()
+                    self.assertEqual(result.exception.code, 1)
+                    self.assertEqual(runner.call_args.kwargs['relay_config'].reasoning_effort, effort)
             for status, code in (('planning_preflight_passed', 0), ('blocked_planning_preflight', 1)):
                 with patch('sys.argv', argv + ['--planning-preflight-only']), \
                         patch('benchmarks.v3_matched_live._source_snapshot', return_value='configured-sha'), \

@@ -1747,8 +1747,7 @@ def run(*, source: Path, repo: Path, output: Path, budget_path: Path,
     safety_stop = None
     journal_calls = budget.campaign_calls()
     if cny_accounting and provider_policy is None:
-        expected_protocol = relay_config.journal_protocol
-        if any(call.get("protocol") != expected_protocol for call in journal_calls):
+        if any(not relay_config.accepts_journal_call(call) for call in journal_calls):
             raise ValueError("budget-ledger call was made through a different fixed-model protocol")
     if checkpoint is not None:
         if not ledger_existed:

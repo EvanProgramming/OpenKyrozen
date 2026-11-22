@@ -34,10 +34,21 @@ class RelayConfig:
     serial_requests: bool = False
     strict_chat: ClassVar[bool] = False
     journal_protocol: ClassVar[str | None] = None
+    reasoning_effort: ClassVar[str | None] = None
 
     @property
     def formal_fixed(self) -> bool:
         return self.journal_protocol is not None
+
+    def journal_metadata(self) -> dict:
+        metadata = {"protocol": self.journal_protocol} if self.formal_fixed else {}
+        if self.reasoning_effort == "low":
+            metadata["reasoning_effort"] = self.reasoning_effort
+        return metadata
+
+    def accepts_journal_call(self, call: dict) -> bool:
+        metadata = self.journal_metadata()
+        return all(call.get(key) == metadata.get(key) for key in ("protocol", "reasoning_effort"))
 
     def __post_init__(self) -> None:
         if (not self.model or type(self.max_output_tokens) is not int or self.max_output_tokens <= 0
@@ -55,6 +66,13 @@ class StrictChatRelayConfig(RelayConfig):
 @dataclass(frozen=True)
 class DeepSeekResponsesRelayConfig(RelayConfig):
     journal_protocol: str = "deepseek-responses-flash"
+    reasoning_effort: ClassVar[str] = "high"
+
+
+@dataclass(frozen=True)
+class DeepSeekLowResponsesRelayConfig(DeepSeekResponsesRelayConfig):
+    journal_protocol: str = "deepseek-responses-flash-low"
+    reasoning_effort: str = "low"
 
 
 DEFAULT_RELAY_CONFIG = RelayConfig()
@@ -234,6 +252,10 @@ class ResponsesRelay:
                 self.provider_error = 'unknown_native_usage_or_price'
             else:
                 row['served_model'] = usage['served_model']
+                reasoning = response.get("reasoning")
+                reported_effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+                if row.get("reasoning_effort") == "low" and reported_effort in ("none", "high", "max"):
+                    self.provider_error = "upstream_reasoning_effort_mismatch"
                 if response.get('status') == 'failed':
                     self.provider_error = 'upstream_response_failed'
                 if strict_finish in _STRICT_CHAT_INTERRUPTION_REASONS:
@@ -350,8 +372,8 @@ class ResponsesRelay:
                         except (ValueError, TypeError, KeyError, RecursionError):
                             self._json(400, {"error": {"message": "request exceeds the priced DeepSeek text policy"}})
                             return
-                if relay.config.formal_fixed and not relay.config.strict_chat:
-                    body["reasoning"] = {"effort": "high"}
+                if isinstance(relay.config, DeepSeekResponsesRelayConfig):
+                    body["reasoning"] = {"effort": relay.config.reasoning_effort}
                 token_field = "max_tokens" if relay.config.strict_chat else "max_output_tokens"
                 body[token_field] = relay.config.max_output_tokens
                 wants_stream = body.get("stream") is True
@@ -370,12 +392,12 @@ class ResponsesRelay:
                        "model": body['model'], "max_output_tokens": relay.config.max_output_tokens,
                        "reserved_rmb": str(quote),
                        "status": "unknown", "usage": None}
-                if relay.config.formal_fixed:
-                    row["protocol"] = relay.config.journal_protocol
+                row.update(relay.config.journal_metadata())
                 if actor_id is not None:
                     row['actor_id'] = actor_id
                 if policy is not None:
                     row.update(protocol='openai-responses', admission_sequence=len(relay.rows))
+                verify_terminal = relay.config.formal_fixed or row.get("reasoning_effort") == "low"
                 root = relay.root_actor_id_by_label.get(label)
                 if actor_id is not None and root is not None:
                     row.update(root_actor_id=root, actor_role='root' if actor_id == root else 'descendant')
@@ -480,8 +502,8 @@ class ResponsesRelay:
                                 row["upstream_wire"] = _strict_wire_evidence(
                                     response_body["id"], choice["finish_reason"], arguments)
                         relay._settle_response(row, response_body)
-                        if relay.config.formal_fixed and (row["status"] != "settled" or relay.provider_error):
-                            self._json(502, {"error": {"message": "fixed DeepSeek result could not be verified"}})
+                        if verify_terminal and (row["status"] != "settled" or relay.provider_error):
+                            self._json(502, {"error": {"message": "DeepSeek result could not be verified"}})
                         else:
                             self._json(200, response_body)
                         return
@@ -517,7 +539,7 @@ class ResponsesRelay:
                                 row["transport_error"] = "downstream_disconnect_drain_limit"
                                 break
                         frame.extend(chunk)
-                        outgoing = bytearray() if relay.config.formal_fixed else chunk
+                        outgoing = bytearray() if verify_terminal else chunk
                         while True:
                             normalized = bytes(frame).replace(b"\r\n", b"\n")
                             if b"\n\n" not in normalized:
@@ -578,12 +600,12 @@ class ResponsesRelay:
                                         with relay._upstream_lock:
                                             relay.provider_error = f"upstream_response_failed{suffix}"
                                     relay._settle_response(row, message.get('response', {}))
-                                    if relay.config.formal_fixed and row["status"] == "settled" and not relay.provider_error:
+                                    if verify_terminal and row["status"] == "settled" and not relay.provider_error:
                                         outgoing.extend(event + b"\n\n")
                                     upstream.close()
                                     terminal = True
                                     break
-                            if relay.config.formal_fixed and not relay.config.strict_chat:
+                            if verify_terminal and not relay.config.strict_chat:
                                 outgoing.extend(event + b"\n\n")
                         # Continuous chunks bypass the socket inactivity timeout. Preserve
                         # terminal usage already received in the current chunk.
