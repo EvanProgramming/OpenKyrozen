@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import ast
 import json
+import os
 import re
 import uuid
 import time
@@ -239,7 +240,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             receipt_arguments: dict[str, Any] | None = None,
                             _duplicate_successful_operation: bool = False,
                             _precommit_plan_validation: bool = False,
-                            expected_spec=None) -> ExecutionReceipt:
+                            expected_spec=None, file_content_changed: bool = False) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
     current_session = getattr(self, "current_session", None)
@@ -336,6 +337,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                     and read_data.get("end_line") == read_data.get("total_lines")
                     and hashlib.sha256(read_data["content"].encode("utf-8")).hexdigest() == read_data.get("sha256")):
                 verification["observed"] = {"complete_file": True}
+    if file_content_changed and success:
+        verification["file_content_changed"] = True
     if canonical == "update_plan" and call_id_source == "native" and expected_spec is not None:
         from openkyrozen.agent.plan_tools import _update_plan
         executor = expected_spec.executor
@@ -450,6 +453,18 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
     return receipt
 
 
+def _write_changes_bytes(adapters, arguments):
+    try:
+        path = adapters._resolve_workspace_path(arguments["path"])
+        if not path.is_file():
+            return not path.exists()
+        expected = arguments["content"].replace("\n", os.linesep).encode("utf-8")
+        with path.open("rb") as existing:
+            return existing.read(len(expected) + 1) != expected
+    except (OSError, ValueError):
+        return False
+
+
 def _run_tool(self, action: str, args: str, *, return_success: bool = False,
               return_receipt: bool = False, operation_scope: str = "",
               _typed_arguments: dict | None = None, _expected_spec=None,
@@ -502,6 +517,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                       "argument_keys": sorted(receipt_args)[:64] if isinstance(receipt_args, dict) else []},
         call_id=_call_id, task_id=_task_id,
     )
+    file_content_changed = False
     def finish(outcome: ToolResult, authorized: bool = False, raw_result: Any = None):
         text = render_tool_result(outcome)
         if return_receipt:
@@ -512,7 +528,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 failure=outcome.error.code if outcome.error else None, raw_result=raw_result,
                 tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
                 expected_spec=approved_spec, call_id=_call_id, call_id_source=_call_id_source,
-                task_id=_task_id, task_plan_id=_task_plan_id,
+                task_id=_task_id, task_plan_id=_task_plan_id, file_content_changed=file_content_changed,
             )
         return (text, outcome.success) if return_success else text
     if action not in self.AVAILABLE_TOOLS:
@@ -630,6 +646,15 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                     and approved_spec.side_effects == "remote")
             )
         )
+        native_file_action = False
+        if (_call_id_source == "native" and _typed_arguments is not None and approved_spec.source == "builtin"
+                and action in {"write_file", "edit_file", "apply_patch"} and not self.execution_context.child_run_id
+                and not executing_plan and not interaction_state.get("pending_plan")):
+            from openkyrozen.tools.manifest import typed_executor
+            adapters = self.current_session.workspace.adapters
+            executor = approved_spec.executor
+            native_file_action = (type(executor) is MethodType
+                                  and executor == typed_executor(getattr(adapters, action, None)))
         while True:
             attempt += 1
             with self._delegation_tool_access(action, execution_args):
@@ -653,7 +678,13 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                     raw_result = self.run_command(execution_args)
                     outcome = command_tool_result(raw_result)
                 else:
+                    if native_file_action and action == "write_file" and self._execution_capability_token.allows("read"):
+                        file_content_changed = _write_changes_bytes(adapters, execution_args)
                     outcome = self.tool_registry._invoke_executor(approved_spec, execution_args)
+                    if native_file_action and action == "edit_file":
+                        file_content_changed = execution_args["old_text"] != execution_args["new_text"]
+                    if native_file_action and action == "apply_patch" and outcome.success:
+                        file_content_changed = outcome.data["old_sha256"] != outcome.data["new_sha256"]
             if (attempt == 1 and retry_safe and outcome.error is not None
                     and outcome.error.retriable):
                 continue

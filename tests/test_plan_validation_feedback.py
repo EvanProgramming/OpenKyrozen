@@ -116,6 +116,27 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertIn("Use the user's behavior names and domain terms verbatim in new task descriptions", guidance)
         self.assertIn(request, messages)
 
+    def test_native_write_receipt_keeps_change_proof_behind_read_authority(self):
+        def write(call_id, content, capabilities):
+            return self.runtime.execute_call(self.runtime.current_session,
+                ToolCall(call_id, "write_file", {"path": "catalog.py", "content": content}),
+                capabilities=capabilities)
+
+        no_op = write("same", self.content, {"read", "write"})
+        self.assertTrue(no_op.success)
+        self.assertNotIn("file_content_changed", no_op.verification)
+        write_only = write("write-only", "updated\n", {"write"})
+        self.assertTrue(write_only.success)
+        self.assertNotIn("file_content_changed", write_only.verification)
+        self.assertNotIn("file_content_changed", write_only.tool_result.metadata)
+        changed = write("observed", self.content, {"read", "write"})
+        self.assertTrue(changed.verification["file_content_changed"])
+        self.assertNotIn("file_content_changed", changed.tool_result.metadata)
+        self.registry.register("write_file", lambda _: tool_success("No write took place"))
+        replacement = write("replacement", "the plugin did not write this\n", {"read", "write"})
+        self.assertTrue(replacement.success)
+        self.assertNotIn("file_content_changed", replacement.verification)
+
     def test_pinned_plan_retains_legacy_execution_as_descriptive_state(self):
         created = self.create_read_task()
         execution = {"action": "read_file", "args": "catalog.py"}

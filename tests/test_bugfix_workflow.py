@@ -112,6 +112,35 @@ class BugFixWorkflowTests(unittest.TestCase):
                 self.assertEqual(main._fix_reproduction_records([failed, accepted, passed]), [failed])
                 self.assertEqual(main._fix_verification_records([failed, accepted, passed]), [passed])
 
+    def test_native_fix_recognizes_a_verified_rerun_without_hypothesis_prose(self):
+        self._run_fake_bug_turn(["The bug is fixed now."] * 4)
+        native = {"call_id_source": "native", "authorized": True}
+        failed = {**native, "receipt_id": "reproduce", "operation_id": "original-command",
+                  "action": "run_cmd", "result": "FAILED", "success": False, "failure": "command_failed",
+                  "verification": {"method": "command_exit_status", "status": "failed"}}
+        edit = {**native, "receipt_id": "edit", "action": "edit_file", "success": True,
+                "verification": {"file_content_changed": True}}
+        passed = {**failed, "receipt_id": "rerun", "result": "OK", "success": True, "failure": None,
+                  "verification": {"method": "command_exit_status", "status": "verified"}}
+        for label, records, expected in (
+            ("verified", [failed, edit, passed], "explained"),
+            ("unrelated check", [failed, edit, {**passed, "operation_id": "different-command"}], "blocked"),
+            ("failed retry", [failed, edit, passed, {**failed, "receipt_id": "retry"}], "blocked"),
+            ("stale check", [failed, edit, passed, {**edit, "receipt_id": "later-edit"}], "blocked"),
+            ("later checkout", [failed, edit, passed, {"action": "git_checkout", "success": True,
+                                                       "side_effects": "mutation"}], "blocked"),
+            ("unproven edit", [failed, {**edit, "verification": {}}, passed], "blocked"),
+        ):
+            with self.subTest(label=label):
+                request = "Fix the bug"
+                answer = "The bug is fixed. The original tests passed."
+                state, reply = main._advance_fix_workflow(main._start_fix_workflow(request), request, answer, records)
+                self.assertEqual(state["stage"], expected)
+                if expected == "explained":
+                    self.assertEqual(reply, answer)
+                    self.assertEqual(state["resolved_reproduction_receipts"], ["reproduce"])
+                    self.assertEqual([item["receipt_id"] for item in state["evidence"]], ["reproduce", "edit", "rerun"])
+
     def test_fake_provider_requires_real_reproduce_fix_and_verify_evidence(self):
         responses = [
             (

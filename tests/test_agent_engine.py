@@ -1074,6 +1074,21 @@ class NativeLifecycleRegressionTests(unittest.TestCase):
         self.assertEqual(answer, turn.final_answer)
         self.assertIn("Action: read_file is a literal example.", answer)
 
+    def test_verified_native_reproduction_keeps_other_failures_visible(self):
+        runtime = self.runtime()
+        turn = TurnContext("Fix the page and inspect its config")
+        runtime._prepare_turn(turn)
+        turn.fix_workflow = {"stage": "explained", "resolved_reproduction_receipts": ["reproducer"]}
+        turn.final_answer, turn.response_text, turn.tool_calls = "The repair passed.", "", []
+        turn.tool_records = [
+            {"action": "run_cmd", "receipt_id": "reproducer", "success": False},
+            {"action": "read_file", "receipt_id": "config", "success": False},
+        ]
+        answer = runtime._complete_turn(turn)
+        self.assertEqual(turn.runtime_status, "incomplete")
+        self.assertIn("read_file: operation failed", answer)
+        self.assertNotIn("run_cmd: operation failed", answer)
+
     def test_verified_fix_cannot_hide_latest_failed_file_verification(self):
         for stage in ("verified", "explained"):
             with self.subTest(stage=stage):

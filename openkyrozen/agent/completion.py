@@ -200,6 +200,7 @@ def _complete_turn(self, turn):
         turn.final_answer = "\n".join(lines)
 
     verified_fix = turn.fix_workflow and turn.fix_workflow.get("stage") in {"verified", "explained"}
+    resolved_reproductions = (turn.fix_workflow or {}).get("resolved_reproduction_receipts")
     failed_tools = []
     unresolved_effect_failure = False
     unresolved_effect_blocked = False
@@ -227,7 +228,9 @@ def _complete_turn(self, turn):
                     for earlier in turn.tool_records[:index])):
             # Refusing an already verified identical operation does not negate its effect.
             continue
-        if not effect_failure and (verified_fix or (record.get("success") and not failed_verification)):
+        expected_reproduction = verified_fix and (
+            resolved_reproductions is None or record.get("receipt_id") in resolved_reproductions)
+        if not effect_failure and (expected_reproduction or (record.get("success") and not failed_verification)):
             continue
         resolved = record.get("operation_id") and any(
             later.get("success") and (later.get("verification") or {}).get("status") == "verified"
