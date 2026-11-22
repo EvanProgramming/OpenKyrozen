@@ -119,11 +119,14 @@ class DistributionTests(unittest.TestCase):
     def test_ci_keeps_core_and_full_python_coverage_without_duplicate_suites(self):
         with (ROOT / "pyproject.toml").open("rb") as handle:
             document = tomllib.load(handle)
-        self.assertIn("playwright>=1.40", document["project"]["optional-dependencies"]["all"])
+        extras = document["project"]["optional-dependencies"]
+        self.assertIn("playwright>=1.40", extras["all"])
+        self.assertIn("httpx[http2]>=0.28", extras["benchmark"])
+        self.assertIn("httpx[http2]>=0.28", extras["all"])
 
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
         self.assertIn("install: install-core", makefile)
-        self.assertIn("pip install -e '.[web,claude]'", makefile)
+        self.assertIn("pip install -e '.[web,claude,benchmark]'", makefile)
         self.assertIn("pip install -e '.[all]'", makefile)
         self.assertIn("python -m playwright install chromium", makefile)
         self.assertIn("learning_worker.py", makefile)
