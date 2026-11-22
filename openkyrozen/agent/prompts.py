@@ -417,6 +417,8 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         "Use the user's behavior names and domain terms verbatim in new task descriptions "
         "so each task can be traced back to the request. "
         "For ordinary pending tasks, reuse typed acceptance and execution from this pinned state. "
+        "Before editing files, select a task with typed verification or an exact declared execution. "
+        "A just-selected prose-only task can bind a command check before any work runs. "
         "Preserve the approved criteria and execution of Strategic Plan objectives. "
         "Define verification before starting each task. An ordinary command criterion looks like "
         '{"criterion":"Tests pass","verification":{"action":"run_cmd","arguments":{"command":"python -m unittest test_example.py"}}}. '

@@ -140,13 +140,10 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     for task in self.tasks.tasks
                 )
             )
+            from openkyrozen.tasks.engine import can_bind_command_check
             can_bind_command = (
                 _native_tool_phase == "plan_active" and plan is not None and can_add_command and any(
-                    task["id"] in plan.task_ids and task["status"] == "pending"
-                    and not task.get("attempts") and not task.get("evidence")
-                    and len(task.get("acceptance", ())) == 1 and isinstance(task["acceptance"][0], str)
-                    and not (task.get("checkpoint") or {}).get("action")
-                    for task in self.tasks.tasks
+                    task["id"] in plan.task_ids and can_bind_command_check(task) for task in self.tasks.tasks
                 )
             )
             unavailable = set()
@@ -209,8 +206,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         if ordinary_plan_edit else "Preserve approved criteria and request renewed approval for material changes. "
                     )
                     if can_bind_command:
-                        criterion_guidance += ("Use bind_command_check with task and command to verify a pending "
-                                               "prose-only task. Bind and start in the same call. ")
+                        criterion_guidance += ("Use bind_command_check with the listed task ID and exact command for a "
+                                               "pending or just-selected prose-only task. Start it in the same call if pending. ")
                     if can_replace_command:
                         criterion_guidance += (
                             "If the selected verification command needs correction, use replace_command_check "

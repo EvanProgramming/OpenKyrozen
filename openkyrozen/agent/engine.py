@@ -631,6 +631,7 @@ class AgentEngine:
                 runtime._update_tasks_panel()
 
             context = runtime.execution_context
+            context.native_plan_active = native_tool_phase == "plan_active"
             context.native_plan_completed = completed_plan
             try:
                 runtime._execute_tool_batch(
@@ -638,6 +639,7 @@ class AgentEngine:
                     call_id_source="native", on_receipt=record_native_call,
                 )
             finally:
+                context.native_plan_active = False
                 context.native_plan_completed = False
             if turn.pending_interaction_reply:
                 final_text = turn.pending_interaction_reply

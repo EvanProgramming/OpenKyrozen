@@ -137,6 +137,52 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertTrue(replacement.success)
         self.assertNotIn("file_content_changed", replacement.verification)
 
+    def test_ordinary_native_edit_waits_for_a_selected_verifiable_task(self):
+        created = self.invoke({"complexity": "complex", "tasks": [{
+            "description": "Update catalog", "acceptance": ["Catalog tests pass"],
+        }]})
+        self.assertTrue(created.success, created.text)
+        plan_id = created.data["plan_id"]
+        task_id = created.data["task_ids"][0]
+        self.runtime.execution_context.native_plan_active = True
+        operations = set()
+
+        def write(call_id, selected=None):
+            receipt = self.runtime._execute_turn_action("write_file", {"path": "catalog.py", "content": "updated\n"},
+                operation_scope="catalog", successful_operations=operations, call_id=call_id,
+                call_id_source="native", task_id=selected, task_plan_id=plan_id if selected else None)
+            return self.runtime._record_turn_receipt(receipt)
+
+        unselected = write("unselected")
+        self.assertEqual(unselected["failure"], "plan_verification_required")
+        self.start(created.data)
+        for plan_required in (True, False):
+            self.runtime.execution_context.native_plan_active = plan_required
+            unverified = write(f"before-bind-{plan_required}", task_id)
+            self.assertEqual(unverified["failure"], "plan_verification_required")
+            self.assertEqual(unverified["requested_task_id"], task_id)
+        self.assertEqual((self.root / "catalog.py").read_text(), self.content)
+        self.assertEqual(self.runtime.tasks.tasks[0]["evidence"], [])
+        self.assertNotIn("action", self.runtime.tasks.tasks[0]["checkpoint"])
+
+        bound = self.invoke({"plan_id": plan_id, "expected_revision": self.runtime.tasks.working_plan.revision,
+            "operations": [{"op": "bind_command_check", "task": task_id, "command": "python3 -m unittest"}]})
+        self.assertTrue(bound.success, bound.text)
+        self.assertEqual(self.runtime.tasks.execution_task_id, task_id)
+        self.assertTrue(write("verified-task-write", task_id)["success"])
+        self.assertEqual((self.root / "catalog.py").read_text(), "updated\n")
+
+    def test_ordinary_native_write_cannot_use_a_different_files_read_criterion(self):
+        created = self.create_read_task()
+        self.start(created)
+        for path, allowed in (("unrelated.py", False), ("./catalog.py", True)):
+            with self.subTest(path=path):
+                receipt = self.runtime._execute_turn_action("write_file", {"path": path, "content": self.content},
+                    operation_scope="catalog", successful_operations=set(), call_id_source="native",
+                    task_id=created["task_ids"][0], task_plan_id=created["plan_id"])
+                self.assertEqual(receipt.success, allowed, receipt.result)
+                self.assertEqual((self.root / path).exists(), allowed)
+
     def test_pinned_plan_retains_legacy_execution_as_descriptive_state(self):
         created = self.create_read_task()
         execution = {"action": "read_file", "args": "catalog.py"}

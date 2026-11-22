@@ -16,6 +16,16 @@ def _unknown_recovery_effect(task):
     return ((task.get("checkpoint") or {}).get("recovery_effect") or {}).get("status") == "unknown"
 
 
+def can_bind_command_check(task):
+    checkpoint = task.get("checkpoint") or {}
+    criteria = task.get("acceptance", ())
+    return (not _unknown_recovery_effect(task) and not checkpoint.get("strategic_plan") and not checkpoint.get("action")
+            and not task.get("attempts") and not task.get("evidence")
+            and len(criteria) == 1 and isinstance(criteria[0], str)
+            and (task["status"] == "pending"
+                 or task["status"] == "running" and checkpoint.get("native_execution_selected")))
+
+
 class TaskManager:
     """Compatibility facade backed by SQLite and guarded by evidence."""
 
@@ -280,7 +290,7 @@ class TaskManager:
                     or not isinstance(execution.get("action"), str) or not execution["action"].strip()
                     or not isinstance(execution.get("arguments"), dict)):
                 raise ValueError("execution must contain an action and object arguments")
-            checkpoint = {"action": execution["action"].strip(),
+            checkpoint = {"action": execution["action"].strip(), "declared_execution": True,
                           "args": json.dumps(execution["arguments"], ensure_ascii=False, allow_nan=False,
                                              sort_keys=True, separators=(",", ":"))}
         return {"description": description.strip(), "acceptance": list(acceptance),
@@ -547,15 +557,12 @@ class TaskManager:
                     kind = "add"
                 else:
                     task = by_id[resolve(operation["task"])]
-                    criteria = task["acceptance"]
-                    if (task["status"] != "pending" or task.get("attempts") or task.get("evidence")
-                            or len(criteria) != 1 or not isinstance(criteria[0], str)
-                            or (task.get("checkpoint") or {}).get("action")):
-                        raise ValueError("command binding requires a pending prose-only task without an execution contract")
-                    operation = {"op": "update", "task": task["id"], "fields": {
-                        "acceptance": [{"criterion": criteria[0], "verification": verification}],
-                    }}
-                    kind = "update"
+                    if not can_bind_command_check(task):
+                        raise ValueError("command binding requires a pending prose-only task or a just-selected one before any work, without an execution contract")
+                    fields = self._plan_task_fields({"description": task["description"],
+                        "acceptance": [{"criterion": task["acceptance"][0], "verification": verification}]})
+                    task.update(acceptance=fields["acceptance"], updated_at=now)
+                    continue
             if kind == "replace_command_check":
                 source_id = resolve(operation["task"])
                 task = by_id[source_id]
@@ -693,8 +700,8 @@ class TaskManager:
                         checkpoint.get(key) == validated["checkpoint"].get(key)
                         for key in ("action", "args")
                     )
-                    excluded = {"action", "args"} if unchanged_execution else {
-                        "action", "args", "args_sha256", "ordered_receipt",
+                    excluded = {"action", "args", "declared_execution"} if unchanged_execution else {
+                        "action", "args", "declared_execution", "args_sha256", "ordered_receipt",
                     }
                     base = {key: value for key, value in checkpoint.items() if key not in excluded}
                     normalized["checkpoint"] = {**base, **validated["checkpoint"]}

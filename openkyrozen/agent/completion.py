@@ -213,6 +213,16 @@ def _complete_turn(self, turn):
             continue
         if _verified_command_replacement(self.tasks, record, later_records):
             continue
+        if (verification.get("method") == "working_plan_write_precondition" and record.get("plan_id")
+                and any(later.get("success") is True and later.get("authorized") is True
+                        and later.get("call_id_source") == "native"
+                        and ((later.get("verification") or {}).get("status") == "verified"
+                             or (later.get("verification") or {}).get("file_content_changed") is True)
+                        and (requested := later.get("requested_task_id") or later.get("task_id"))
+                        and record.get("requested_task_id") in {None, requested}
+                        and all(later.get(key) == record.get(key) for key in ("plan_id", "operation_id", "action"))
+                        for later in later_records)):
+            continue
         failed_verification = verification.get("status") == "failed"
         effect_action = (record.get("action") in {"write_file", "edit_file", "apply_patch"}
             or record.get("side_effects") in {"filesystem", "remote", "destructive", "mutation", "external"})

@@ -240,6 +240,7 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             receipt_arguments: dict[str, Any] | None = None,
                             _duplicate_successful_operation: bool = False,
                             _precommit_plan_validation: bool = False,
+                            _plan_write_precondition: bool = False,
                             expected_spec=None, file_content_changed: bool = False) -> ExecutionReceipt:
     canonical = self._operation_action(action)
     from openkyrozen.agent.delegation import TOOLS
@@ -364,6 +365,8 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                             "observed": observed}
     if _duplicate_successful_operation:
         verification = {"status": "not_applicable", "method": "duplicate_success_refusal", "observed": None}
+    if _plan_write_precondition:
+        verification = {"status": "not_applicable", "method": "working_plan_write_precondition", "observed": None}
 
     def safe_metadata(value, budget=4000):
         def clean(item, remaining, depth=0):
@@ -518,6 +521,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
         call_id=_call_id, task_id=_task_id,
     )
     file_content_changed = False
+    plan_write_precondition = False
     def finish(outcome: ToolResult, authorized: bool = False, raw_result: Any = None):
         text = render_tool_result(outcome)
         if return_receipt:
@@ -529,6 +533,7 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                 tool_error=outcome.error, result_data=outcome.data, tool_result=outcome,
                 expected_spec=approved_spec, call_id=_call_id, call_id_source=_call_id_source,
                 task_id=_task_id, task_plan_id=_task_plan_id, file_content_changed=file_content_changed,
+                _plan_write_precondition=plan_write_precondition,
             )
         return (text, outcome.success) if return_success else text
     if action not in self.AVAILABLE_TOOLS:
@@ -668,6 +673,16 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
                         or not self._execution_capability_token.allows(approved_spec.capability)):
                     outcome = tool_failure("permission_denied", "Tool retry stopped because its authority changed.")
                     break
+                if native_file_action and (self.execution_context.native_plan_active or _task_plan_id is not None):
+                    selected = self.tasks.active_working_task(_task_id) if _task_id else None
+                    if not selected or not _file_edit_has_contract(
+                            selected, action, execution_args, adapters):
+                        plan_write_precondition = True
+                        outcome = tool_failure("plan_verification_required",
+                            "Select a Working Plan task with typed verification before editing files. "
+                            "Use update_plan with bind_command_check, the listed task ID and the exact command, then start the task if pending.",
+                            retriable=True)
+                        break
                 if callable(_on_dispatch):
                     _on_dispatch()
                 self._publish_runtime_event(
@@ -705,7 +720,30 @@ def _run_tool(self, action: str, args: str, *, return_success: bool = False,
             self._project_graph.refresh_async()
         except Exception:
             pass
-    return finish(outcome, authorized=True, raw_result=raw_result)
+    return finish(outcome, authorized=not plan_write_precondition, raw_result=raw_result)
+
+
+def _file_edit_has_contract(task, action, arguments, adapters):
+    checkpoint = task.get("checkpoint") or {}
+    if task["status"] != "running" or not checkpoint.get("native_execution_selected"):
+        return False
+    if (checkpoint.get("action") == action and (checkpoint.get("declared_execution") or not task.get("evidence"))
+            and checkpoint.get("args") == json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))):
+        return True
+    for criterion in task.get("acceptance", ()):
+        if not isinstance(criterion, dict) or criterion.get("action") not in {"run_cmd", "read_file"}:
+            continue
+        try:
+            check = json.loads(criterion["args"])
+            if criterion["action"] == "run_cmd" and not check.get("background"):
+                return True
+            expect = criterion.get("expect") or {}
+            if (criterion["action"] == "read_file" and set(expect) in ({"equals"}, {"contains"})
+                    and adapters._resolve_workspace_path(check["path"]) == adapters._resolve_workspace_path(arguments["path"])):
+                return True
+        except (AttributeError, KeyError, OSError, TypeError, ValueError):
+            continue
+    return False
 
 
 def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
@@ -989,7 +1027,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
             task_acceptance = None
         else:
             task_acceptance = receipt_projection["acceptance"]
-    should_reconcile = (
+    should_reconcile = receipt.verification.get("method") != "working_plan_write_precondition" and (
         bool(explicit_task_id) or receipt.call_id_source == "legacy"
         or (allow_legacy_task_matching and receipt.call_id_source == "synthetic")
     )

@@ -203,7 +203,7 @@ _PLAN_OPERATION_SCHEMAS = [
         'command':{'type':'string','minLength':1}},
         'required':['op','ref','description','command'],'additionalProperties':False},
     {'type':'object','properties':{'op':{'type':'string','enum':['bind_command_check'],
-        'description':'Bind an exact command to the sole prose criterion of a pending ordinary task.'},
+        'description':'Bind an exact command to the sole prose criterion of an ordinary task before it runs any work.'},
         'task':{'type':'string','minLength':1},'command':{'type':'string','minLength':1}},
         'required':['op','task','command'],'additionalProperties':False},
     {'type':'object','properties':{'op':{'type':'string','enum':['replace_command_check'],

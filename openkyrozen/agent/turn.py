@@ -65,6 +65,7 @@ class ExecutionContext:
     cancelled: Any = None
     native_control_input: str = ""
     native_plan_inspected: bool = False
+    native_plan_active: bool = False
     native_plan_completed: bool = False
     native_wire_regeneration: bool = False
 
