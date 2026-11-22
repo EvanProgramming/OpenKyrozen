@@ -31,7 +31,7 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         wire = strict_chat_tools([tool])[0]["function"]["parameters"]
         items = wire["properties"]["operations"]["anyOf"][0]["items"]
         variants = wire["$def"][items["$ref"].rsplit("/", 1)[-1]]["anyOf"]
-        shorthand = next(row for row in variants if row["properties"]["op"]["enum"] == ["add_command_check"])
+        shorthand, = [row for row in variants if row["properties"]["op"]["enum"] == ["add_command_check"]]
         self.assertEqual(set(shorthand["required"]), {"op", "ref", "description", "command"})
         self.assertFalse(shorthand["additionalProperties"])
 
@@ -43,17 +43,24 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         raw = json.dumps(arguments)
         decoded = json.loads(decode_strict_chat_arguments(raw, schema, tool_name="update_plan"))
         self.assertIsNone(ToolRegistry._argument_error(schema, decoded))
-        self.assertEqual(decoded, {**arguments, "operations": [
-            {"op": "add", "ref": "duplicate", "task": {"description": "Verify HTTP 409", "acceptance": [
-                {"criterion": "Verify HTTP 409", "verification": {"action": "run_cmd", "arguments": {"command": command}}},
-            ]}},
-            {"op": "start", "task": "duplicate"},
-        ]})
+        self.assertEqual(decoded, arguments)
         self.assertEqual(json.loads(decode_strict_chat_arguments(raw, schema)), arguments)
         self.assertEqual(json.loads(decode_strict_chat_arguments(raw, strategic_schema, tool_name="update_plan")),
                          arguments)
         strategic_tool = strict_chat_tools([{**tool, "parameters": strategic_schema}])[0]
         self.assertNotIn("add_command_check", json.dumps(strategic_tool))
+        hidden = deepcopy(schema)
+        for shape in (hidden, *hidden["anyOf"]):
+            operations = shape["properties"].get("operations")
+            if operations:
+                operations["items"]["anyOf"] = [
+                    item for item in operations["items"]["anyOf"]
+                    if item["properties"]["op"]["enum"] != ["add_command_check"]
+                ]
+        self.assertNotIn("add_command_check", json.dumps(strict_chat_tools([{**tool, "parameters": hidden}])))
+        rejected = json.loads(decode_strict_chat_arguments(raw, hidden, tool_name="update_plan"))
+        self.assertEqual(rejected, arguments)
+        self.assertIsNotNone(ToolRegistry._argument_error(hidden, rejected))
 
         for invalid in ({"anchor": "approved-task"}, {"command": False}):
             with self.subTest(invalid=invalid):
@@ -73,7 +80,7 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertIsNotNone(ToolRegistry._argument_error(completed, rejected))
 
     def test_strict_plan_update_projects_optional_union_fields_without_expansion(self):
-        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_schema, strict_chat_tools
         from openkyrozen.tools.catalog import _SCHEMAS
         from openkyrozen.tools.manifest import ToolRegistry
 
@@ -86,7 +93,9 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         fields = definitions[update["properties"]["fields"]["$ref"].rsplit("/", 1)[-1]]
         self.assertEqual(set(fields["required"]), {"description", "acceptance", "dependencies", "priority", "execution"})
         self.assertNotIn("anyOf", fields)
-        self.assertLess(len(json.dumps(wire, separators=(",", ":"))), 12_000)
+        tool = {"name": "update_plan", "description": "Edit the current plan.", "parameters": schema}
+        advertised = strict_chat_tools([tool])[0]["function"]["parameters"]
+        self.assertLess(len(json.dumps(advertised, separators=(",", ":"))), 12_000)
 
         omitted = {"omit": True}
         nested = dict.fromkeys(fields["required"], omitted)

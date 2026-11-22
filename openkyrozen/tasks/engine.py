@@ -501,6 +501,8 @@ class TaskManager:
         allowed_by_op = {
             "add": {"op", "ref", "task"}, "add_read_check": {"op", "ref", "path"},
             "update": {"op", "task", "fields"},
+            "add_command_check": {"op", "ref", "description", "command"},
+            "bind_command_check": {"op", "task", "command"},
             "replace_command_check": {"op", "task", "ref", "command"},
             "cancel": {"op", "task"}, "reorder": {"op", "tasks"},
             "add_dependency": {"op", "task", "depends_on"},
@@ -510,7 +512,8 @@ class TaskManager:
             "block": {"op", "task", "reason"}, "unblock": {"op", "task", "reason"},
             "start": {"op", "task"}, "suggest_complete": {"op", "task"},
         }
-        if saved is None and not any(isinstance(item, dict) and item.get("op") in ("add", "add_read_check")
+        if saved is None and not any(isinstance(item, dict)
+                                     and item.get("op") in ("add", "add_read_check", "add_command_check")
                                      for item in operations):
             raise ValueError("a new Working Plan requires at least one add operation")
         has_edits = any(isinstance(operation, dict) and operation.get("op") != "suggest_complete"
@@ -531,6 +534,28 @@ class TaskManager:
                     }}],
                 }}
                 kind = "add"
+            if kind in {"add_command_check", "bind_command_check"}:
+                if not allow_complete_read:
+                    raise ValueError("compact command checks are only for ordinary Working Plans")
+                verification = {"action": "run_cmd", "arguments": {"command": operation["command"]}}
+                if kind == "add_command_check":
+                    description = operation["description"]
+                    operation = {"op": "add", "ref": operation["ref"], "task": {
+                        "description": description,
+                        "acceptance": [{"criterion": description, "verification": verification}],
+                    }}
+                    kind = "add"
+                else:
+                    task = by_id[resolve(operation["task"])]
+                    criteria = task["acceptance"]
+                    if (task["status"] != "pending" or task.get("attempts") or task.get("evidence")
+                            or len(criteria) != 1 or not isinstance(criteria[0], str)
+                            or (task.get("checkpoint") or {}).get("action")):
+                        raise ValueError("command binding requires a pending prose-only task without an execution contract")
+                    operation = {"op": "update", "task": task["id"], "fields": {
+                        "acceptance": [{"criterion": criteria[0], "verification": verification}],
+                    }}
+                    kind = "update"
             if kind == "replace_command_check":
                 source_id = resolve(operation["task"])
                 task = by_id[source_id]

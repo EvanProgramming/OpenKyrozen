@@ -127,39 +127,57 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             plan_tool = next(item for item in tools if item["name"] == "update_plan")
             schema = plan_tool["parameters"]
             plan = getattr(getattr(self, "tasks", None), "working_plan", None)
-            interaction = self._interaction_controller.state() if plan and plan.status in {"active", "completed"} else {}
+            interaction = self._interaction_controller.state()
             accepted = interaction.get("executing_plan")
-            ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != plan.id
-            ordinary_followup = (_native_tool_phase == "plan_completed" and not accepted
-                                 and not interaction.get("pending_plan"))
+            ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != getattr(plan, "id", None)
+            can_add_command = not accepted and not interaction.get("pending_plan")
+            ordinary_followup = _native_tool_phase == "plan_completed" and can_add_command
             can_replace_command = (
-                _native_tool_phase == "plan_active" and plan is not None and not accepted
-                and not interaction.get("pending_plan") and "run_cmd" in current_names and any(
+                _native_tool_phase == "plan_active" and plan is not None and can_add_command
+                and "run_cmd" in current_names and any(
                     task["id"] in plan.task_ids and task["status"] == "running"
                     and (task.get("evidence") or [{}])[-1].get("failed_command_exit_code") is not None
                     for task in self.tasks.tasks
                 )
             )
+            can_bind_command = (
+                _native_tool_phase == "plan_active" and plan is not None and can_add_command and any(
+                    task["id"] in plan.task_ids and task["status"] == "pending"
+                    and not task.get("attempts") and not task.get("evidence")
+                    and len(task.get("acceptance", ())) == 1 and isinstance(task["acceptance"][0], str)
+                    and not (task.get("checkpoint") or {}).get("action")
+                    for task in self.tasks.tasks
+                )
+            )
+            unavailable = set()
+            if not can_replace_command:
+                unavailable.add("replace_command_check")
+            if not can_bind_command:
+                unavailable.add("bind_command_check")
+            add_command_guidance = (
+                "Use add_command_check with ref, description and command for new verification work. "
+                if can_add_command else ""
+            )
+            if not can_add_command:
+                unavailable.add("add_command_check")
+            if not ordinary_plan_edit:
+                unavailable.add("add_read_check")
             for shape in (schema, *schema.get("anyOf", ())):
                 operations = shape.get("properties", {}).get("operations")
                 if operations is None:
                     continue
-                if not can_replace_command:
-                    operations["items"]["anyOf"] = [
-                        item for item in operations["items"]["anyOf"]
-                        if item["properties"]["op"]["enum"] != ["replace_command_check"]
-                    ]
-                variants = operations["items"]["anyOf"]
+                variants = [item for item in operations["items"]["anyOf"]
+                            if item["properties"]["op"]["enum"][0] not in unavailable]
                 if ordinary_plan_edit:
                     for operation in variants:
                         operation["properties"].pop("anchor", None)
-                else:
-                    operations["items"]["anyOf"] = [item for item in variants
-                        if item["properties"]["op"]["enum"][0] not in {"add_read_check", "replace_command_check"}]
+                operations["items"]["anyOf"] = variants
             if _native_tool_phase == "plan_required":
                 operations = schema["properties"]["operations"]
                 creation_ops = [item for item in operations["items"]["anyOf"]
-                                if item["properties"]["op"]["enum"][0] in {"add", "add_read_check", "start"}]
+                                if item["properties"]["op"]["enum"][0] in {
+                                    "add", "add_read_check", "add_command_check", "start",
+                                }]
                 plan_tool["parameters"] = {
                     "type": "object", "additionalProperties": False,
                     "required": ["expected_revision", "operations"],
@@ -170,8 +188,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                 }
                 plan_tool["description"] = (
                     "Create the required Working Plan at revision zero. For inspection of unknown file contents, "
-                    "use add_read_check with ref and path. Use add with a task and acceptance for other work, "
-                    "including pending edits and tests. In the same call, start the first task by its ref."
+                    "use add_read_check with ref and path. "
+                    f"{add_command_guidance}Use add for other work. "
+                    "In the same call, start the first task by its ref."
                 )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
                 required = ["plan_id", "expected_revision", "operations"]
@@ -184,11 +203,14 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     properties["reason"] = {"type": "string", "minLength": 1,
                                             "description": "Optional rationale for the plan edit."}
                     criterion_guidance = (
-                        "For a pending task with only prose acceptance and no execution contract, use update "
-                        "to set typed acceptance before start in the same call. For a typed check of an expected failure, "
+                        f"{add_command_guidance}Use update to set other typed criteria before start in the same call. "
+                        "For a typed check of an expected failure, "
                         "bind a run_cmd check that exits zero only when the expected failure is observed. "
                         if ordinary_plan_edit else "Preserve approved criteria and request renewed approval for material changes. "
                     )
+                    if can_bind_command:
+                        criterion_guidance += ("Use bind_command_check with task and command to verify a pending "
+                                               "prose-only task. Bind and start in the same call. ")
                     if can_replace_command:
                         criterion_guidance += (
                             "If the selected verification command needs correction, use replace_command_check "
@@ -214,12 +236,14 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         required.remove("plan_id")
                         properties["operations"]["items"] = {"anyOf": [
                             item for item in variants
-                            if item["properties"]["op"]["enum"][0] in {"add", "add_read_check", "start", "suggest_complete"}
+                            if item["properties"]["op"]["enum"][0] in {
+                                "add", "add_read_check", "add_command_check", "start", "suggest_complete",
+                            }
                         ]}
                         plan_tool["description"] += (
                             " If work from the original request remains, create a separate Working Plan. "
                             "Omit plan_id, set expected_revision to 0, add tasks for the remaining work, "
-                            "and start the first task by its ref."
+                            "and start the first task by its ref. Use add_command_check for command verification."
                         )
                 plan_tool["parameters"] = {
                     "type": "object", "additionalProperties": False, "required": required, "properties": properties,

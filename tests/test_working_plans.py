@@ -125,6 +125,34 @@ class WorkingPlanModelTests(unittest.TestCase):
             self.assertEqual(tasks[combined]["checkpoint"]["superseded_by"], [corrected])
             self.assertEqual(tasks[corrected]["checkpoint"]["supersedes"], [combined])
 
+    def test_compact_command_checks_bind_seeded_work_and_add_discovered_verification(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),
+                                  workspace_id="project", session_id="compact-command")
+            seeded = manager.edit_plan(expected_revision=0, operations=[
+                {"op": "add", "ref": "implement", "task": {
+                    "description": "Implement the endpoint", "acceptance": ["Existing API behavior still works"]}},
+            ])
+            task_id = seeded["references"]["implement"]
+            command = "python3 -m unittest test_api.py"
+            operations = [
+                {"op": "bind_command_check", "task": task_id, "command": command},
+                {"op": "add_command_check", "ref": "duplicate", "description": "Duplicate names return a conflict",
+                 "command": "python3 -m unittest test_api.ApiTests.test_duplicate_name"},
+                {"op": "start", "task": task_id},
+            ]
+            revised = manager.edit_plan(plan_id=seeded["plan_id"], expected_revision=1, operations=operations)
+            first, new = revised["tasks"]
+            self.assertEqual(manager.execution_task_id, task_id)
+            self.assertEqual(first["acceptance"][0]["criterion"], "Existing API behavior still works")
+            self.assertEqual(first["acceptance"][0]["args"], '{"command":"python3 -m unittest test_api.py"}')
+            self.assertEqual(new["acceptance"][0]["criterion"], "Duplicate names return a conflict")
+            self.assertEqual(new["status"], "pending")
+            self.assertFalse(new["evidence"])
+            with self.assertRaisesRegex(ValueError, "pending prose-only task"):
+                manager.edit_plan(plan_id=seeded["plan_id"], expected_revision=2, operations=[operations[0]])
+            self.assertEqual(manager.working_plan.revision, 2)
+
     def test_replace_command_check_keeps_old_receipt_and_starts_the_corrected_check(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
             manager = TaskManager(sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3"))),

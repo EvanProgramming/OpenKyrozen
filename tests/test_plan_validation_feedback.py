@@ -781,7 +781,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(set(creation["required"]), set(creation["properties"]))
                     operations = creation["properties"]["operations"]["items"]["anyOf"]
                     case.assertEqual([op["properties"]["op"]["enum"] for op in operations],
-                                     [["add"], ["add_read_check"], ["start"]])
+                                     [["add"], ["add_read_check"], ["add_command_check"], ["start"]])
                     case.assertNotIn("op:add", plan_tool["description"])
                     case.assertNotIn("plan_id", plan_tool["description"])
                     pinned = next(item["content"] for item in messages if isinstance(item, dict)
@@ -856,7 +856,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     case.assertEqual(set(plan_schema["required"]), {"expected_revision", "operations"})
                     operations = plan_schema["properties"]["operations"]["items"]["anyOf"]
                     case.assertEqual([op["properties"]["op"]["enum"] for op in operations],
-                                     [["add"], ["add_read_check"], ["start"], ["suggest_complete"]])
+                                     [["add"], ["add_read_check"], ["add_command_check"], ["start"], ["suggest_complete"]])
                     read = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "read")
                     case.assertEqual(read.output["working_plan_progress"], {
                         "plan_id": state["plan_id"], "revision": state["revision"],

@@ -83,15 +83,6 @@ _STRICT_MAP_DEFINITIONS = {
     ]},
 }
 
-_ADD_COMMAND_CHECK = _closed_object({
-    "op": {"type": "string", "enum": ["add_command_check"],
-           "description": "Add a verification task for a command that must exit zero. Start the ref before running it."},
-    "ref": {"type": "string", "minLength": 1},
-    "description": {"type": "string", "minLength": 1},
-    "command": {"type": "string", "minLength": 1},
-})
-
-
 def _plan_operations(schema):
     return schema.get("properties", {}).get("operations", {}).get("items", {}).get("anyOf", ())
 
@@ -102,12 +93,17 @@ def _plan_accepts_add(schema):
 
 
 def _plan_wire_schema(schema):
-    if not _plan_accepts_add(schema):
+    variants = _plan_operations(schema)
+    if not variants or _plan_accepts_add(schema):
         return schema
+    variants = [operation for operation in variants
+                if operation["properties"]["op"]["enum"][0] not in {
+                    "add_command_check", "bind_command_check", "replace_command_check",
+                }]
     properties = schema["properties"]
     operations = properties["operations"]
     result = {**schema, "properties": {**properties, "operations": {
-        **operations, "items": {"anyOf": [*_plan_operations(schema), _ADD_COMMAND_CHECK]},
+        **operations, "items": {"anyOf": variants},
     }}}
     if "anyOf" in schema:
         result["anyOf"] = [_plan_wire_schema(branch) for branch in schema["anyOf"]]
@@ -322,19 +318,6 @@ def decode_strict_chat_arguments(raw, schema, *, tool_name=None):
     if (uses_envelope and isinstance(value, dict) and set(value) == {_WIRE_ARGUMENTS}
             and isinstance(value[_WIRE_ARGUMENTS], dict) and ToolRegistry._schema_error(schema, value) is not None):
         value = value[_WIRE_ARGUMENTS]
-    if (tool_name == "update_plan" and isinstance(value, dict) and _plan_accepts_add(schema)
-            and isinstance(value.get("operations"), list)):
-        operations = []
-        for operation in value["operations"]:
-            if ToolRegistry._schema_error(_ADD_COMMAND_CHECK, operation) is None:
-                description = operation["description"]
-                operation = {"op": "add", "ref": operation["ref"], "task": {
-                    "description": description, "acceptance": [{"criterion": description, "verification": {
-                        "action": "run_cmd", "arguments": {"command": operation["command"]},
-                    }}],
-                }}
-            operations.append(operation)
-        value = {**value, "operations": operations}
     return json.dumps(decode(value, schema, root=True), ensure_ascii=False, allow_nan=False)
 
 
@@ -357,13 +340,8 @@ def strict_chat_tools(tools):
     for tool in tools or ():
         is_plan = tool["name"] == "update_plan"
         schema = _plan_wire_schema(tool["parameters"]) if is_plan else tool["parameters"]
-        description = tool["description"]
-        if is_plan and _plan_accepts_add(tool["parameters"]):
-            description += (" For a new verification task with only a command and no dependencies, use "
-                            "add_command_check with ref, description and the exact command. Start the pending "
-                            "task once no other task is running, then run the command.")
         result.append({"type": "function", "function": {
-            **tool, "description": description, "strict": True, "parameters":
+            **tool, "strict": True, "parameters":
             strict_chat_schema(schema, remaining=remaining, compact_plan_arguments=is_plan),
         }})
     if _projected_bytes(result, {}) > 999_488:

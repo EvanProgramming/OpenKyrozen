@@ -125,15 +125,18 @@ def _update_plan(self, arguments: dict):
                 return tool_failure("permission_denied",
                                     "A Strategic Plan is active or awaiting approval. Use its approval workflow.")
             if self.execution_context.native_plan_completed:
-                actions = {"add" if op["op"] == "add_read_check" else op["op"] for op in operations or ()}
+                actions = {"add" if op["op"] in {"add_read_check", "add_command_check"} else op["op"]
+                           for op in operations or ()}
                 if actions != {"add", "start"}:
                     raise ValueError("A follow-up plan requires add and start operations in the same call")
         if operations is not None:
-            if any(isinstance(op, dict) and op.get("op") == "replace_command_check" for op in operations):
+            if any(isinstance(op, dict) and op.get("op") in {
+                "add_command_check", "bind_command_check", "replace_command_check",
+            } for op in operations):
                 interaction = self._interaction_controller.state()
                 if interaction.get("executing_plan") or interaction.get("pending_plan"):
                     return tool_failure("permission_denied",
-                                        "Command checks cannot be replaced during a Strategic Plan or its approval.")
+                                        "Compact command checks require ordinary work without pending Strategic approval.")
             result = self.tasks.update_plan(
                 complexity=arguments.get("complexity"), plan_id=arguments.get("plan_id"),
                 expected_revision=arguments["expected_revision"], operations=arguments["operations"],
