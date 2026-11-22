@@ -273,7 +273,8 @@ _OBJECT_FIELDS = {
     'search_files': {'query': {'type':'string'}, 'path': {'type':'string'}, 'glob': {'type':'string'}, 'limit': {'type':'integer','minimum':1,'maximum':100}},
     'calculate': {'expression': {'type':'string','minLength':1,'maxLength':4000}},
     'read_file': {'path': {'type':'string'}, 'start_line': {'type':'integer','minimum':1}, 'max_lines': {'type':'integer','minimum':1}, 'max_chars': {'type':'integer','minimum':1}},
-    'edit_file': {'path': {'type':'string'}, 'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'}, 'expected_sha256': {'type':'string'}},
+    'edit_file': {'path': {'type':'string'}, 'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'},
+                  'expected_sha256': {'type':'string','minLength':64,'maxLength':64,'pattern':'^[0-9a-f]{64}$'}},
     'apply_patch': {'path': {'type':'string'}, 'expected_sha256': {'type':'string','pattern':'^[0-9a-fA-F]{64}$'},
                     'hunks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
                         'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'},

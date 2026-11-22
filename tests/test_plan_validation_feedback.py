@@ -3,6 +3,7 @@ from contextlib import ExitStack, closing
 from copy import deepcopy
 from dataclasses import replace
 from functools import wraps
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -253,6 +254,60 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                             "command": "python3 -m unittest"}]})
         self.assertFalse(denied.success)
         self.assertEqual(self.runtime.tasks.tasks[0], before)
+
+    def test_ordinary_plan_requires_the_declared_file_tool_arguments_before_commit(self):
+        edit = {"path": "catalog.py", "old_text": self.content, "new_text": self.content + "\n"}
+        task = {"description": "Edit catalog.py", "acceptance": ["The edit is verified"],
+                "execution": {"action": "edit_file", "arguments": edit}}
+        operations = [{"op": "add", "ref": "edit", "task": task}, {"op": "start", "task": "edit"}]
+        for invalid_edit in (edit, {**edit, "expected_sha256": ""}, {**edit, "expected_sha256": "a" * 64 + "\n"}):
+            with self.subTest(edit=invalid_edit):
+                task["execution"]["arguments"] = invalid_edit
+                invalid = self.invoke({"expected_revision": 0, "operations": operations})
+                self.assertFalse(invalid.success)
+                self.assertIn("expected_sha256", invalid.text)
+                self.assertTrue(invalid.error.metadata["plan_validation_no_effect"])
+                self.assertIsNone(self.runtime.tasks.working_plan)
+                self.assertEqual((self.root / "catalog.py").read_text(), self.content)
+
+        edit["expected_sha256"] = hashlib.sha256(self.content.encode()).hexdigest()
+        task["execution"]["arguments"] = edit
+        created = self.invoke({"expected_revision": 0, "operations": operations})
+        self.assertTrue(created.success, created.text)
+        self.runtime.execution_context.native_plan_active = True
+        task_id, = created.data["task_ids"]
+        receipt = self.runtime._execute_turn_action(
+            "edit_file", edit, operation_scope="catalog", successful_operations=set(), call_id="planned-edit",
+            call_id_source="native", task_id=task_id, task_plan_id=created.data["plan_id"],
+        )
+        recorded = self.runtime._record_turn_receipt(receipt)
+        self.assertTrue(recorded["success"], recorded)
+        self.assertEqual(recorded["task_id"], task_id)
+        self.assertEqual((self.root / "catalog.py").read_text(), edit["new_text"])
+
+    def test_stored_complete_read_with_an_incomplete_file_execution_can_be_replaced(self):
+        read = self.task()["acceptance"][0]
+        read["verification"]["expect"] = {"complete": True}
+        wrong_execution = {"action": "edit_file", "arguments": {
+            "path": "catalog.py", "old_text": self.content, "new_text": self.content + "\n",
+        }}
+        plan = self.runtime.tasks.edit_plan(expected_revision=0, operations=[
+            {"op": "add", "ref": "edit", "task": {"description": "Edit catalog.py", "acceptance": [read],
+                                               "execution": wrong_execution}},
+            {"op": "start", "task": "edit"},
+        ])
+        task_id, = plan["task_ids"]
+        original = deepcopy(self.runtime.tasks.tasks[0]["checkpoint"])
+        replaced = self.invoke({"plan_id": plan["plan_id"], "expected_revision": plan["revision"],
+            "operations": [{"op": "replace_command_check", "task": task_id, "ref": "verified",
+                            "command": "python3 -m unittest test_catalog.py"}]})
+        self.assertTrue(replaced.success, replaced.text)
+        old, new = self.runtime.tasks.tasks
+        self.assertEqual(old["checkpoint"]["args"], original["args"])
+        self.assertEqual(old["status"], "cancelled")
+        self.assertEqual(new["checkpoint"]["supersedes"], [task_id])
+        self.assertNotIn("action", new["checkpoint"])
+        self.assertEqual(new["acceptance"][0]["action"], "run_cmd")
 
     def test_pinned_plan_retains_legacy_execution_as_descriptive_state(self):
         created = self.create_read_task()

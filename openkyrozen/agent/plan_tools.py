@@ -116,6 +116,21 @@ def _update_plan(self, arguments: dict):
         if denial:
             raise ValueError(denial)
 
+    def validate_file_execution(action, arguments):
+        if action not in {"write_file", "edit_file", "apply_patch"}:
+            return
+        spec = self.tool_registry.specs.get(action)
+        if spec is None or spec.source != "builtin":
+            return
+        error = self.tool_registry._argument_error(spec.input_schema, arguments, "execution.arguments")
+        if error:
+            hint = " Use the exact arguments of the file tool."
+            if action in {"edit_file", "apply_patch"}:
+                hint += " Take expected_sha256 from the current read_file result."
+            if "run_cmd" in self._permitted_tool_names():
+                hint += " An add_command_check can declare an exact test command."
+            raise ValueError(f"Planned {action} execution is invalid because {error}.{hint}".rstrip("."))
+
     commit_attempts = self.tasks._plan_commit_attempts
     try:
         operations = arguments.get("operations")
@@ -142,6 +157,7 @@ def _update_plan(self, arguments: dict):
                 expected_revision=arguments["expected_revision"], operations=arguments["operations"],
                 reason=arguments.get("reason"),
                 strategy_validator=validate_strategy,
+                execution_validator=validate_file_execution,
             )
             suggested = {operation["task"] for operation in arguments["operations"]
                          if operation.get("op") == "suggest_complete"}
@@ -165,7 +181,8 @@ def _update_plan(self, arguments: dict):
                          "Changes to approved criteria require renewed approval.")
             return tool_success(text, data=result,
                                 metadata={"working_plan_confirmation": True} if confirmation else None)
-        plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"])
+        plan = self.tasks.update_plan(complexity=arguments["complexity"], tasks=arguments["tasks"],
+                                      execution_validator=validate_file_execution)
     except (KeyError, TypeError, ValueError) as exc:
         ordinary = not self._interaction_controller.state().get("executing_plan") and not any(
             (task.get("checkpoint") or {}).get("strategic_plan") for task in self.tasks.tasks)

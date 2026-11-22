@@ -29,9 +29,12 @@ def can_bind_command_check(task):
 def can_replace_complete_read_check(task):
     checkpoint = task.get("checkpoint") or {}
     criteria = task.get("acceptance", ())
+    declared_edit = (checkpoint.get("declared_execution") is True
+                     and checkpoint.get("action") in {"write_file", "edit_file", "apply_patch"})
     return (task["status"] == "running" and checkpoint.get("native_execution_selected")
             and not _unknown_recovery_effect(task) and not checkpoint.get("strategic_plan")
-            and not checkpoint.get("action") and not task.get("attempts") and not task.get("evidence")
+            and (not checkpoint.get("action") or declared_edit)
+            and not task.get("attempts") and not task.get("evidence")
             and len(criteria) == 1 and isinstance(criteria[0], dict)
             and criteria[0].get("action") == "read_file" and criteria[0].get("expect") == {"complete": True})
 
@@ -311,6 +314,7 @@ class TaskManager:
                   strategic_bindings: dict[str, dict[str, Any]] | None = None,
                   transaction_event: dict[str, Any] | None = None,
                   strategy_validator=None,
+                  execution_validator=None,
                   reason: str | None = None) -> dict[str, Any]:
         """Apply a validated ordered operation batch as one revision-checked transaction."""
         if type(expected_revision) is not int or expected_revision < 0:
@@ -608,7 +612,7 @@ class TaskManager:
                 corrected = supersede([source_id], operation["ref"], {
                     "description": task["description"], "priority": task["priority"],
                     "acceptance": [{"criterion": criterion["criterion"], "verification": verification}],
-                    **({"execution": verification} if checkpoint.get("action") else {}),
+                    **({"execution": verification} if not complete_read and checkpoint.get("action") else {}),
                 }, allow_running=True)
                 if not complete_read:
                     by_id[corrected]["checkpoint"]["replaced_command_receipts"] = [
@@ -862,8 +866,14 @@ class TaskManager:
         if used_strategic_bindings != set(strategic_bindings or {}):
             raise ValueError("strategic bindings must identify added task references exactly")
 
+        previous_checkpoints = {task["id"]: task.get("checkpoint") or {} for task in previous_tasks}
         for task in tasks:
             task["plan_id"] = plan_id
+            checkpoint = task.get("checkpoint") or {}
+            if allow_complete_read and execution_validator is not None and checkpoint.get("declared_execution"):
+                previous = previous_checkpoints.get(task["id"], {})
+                if any(checkpoint.get(key) != previous.get(key) for key in ("declared_execution", "action", "args")):
+                    execution_validator(checkpoint["action"], json.loads(checkpoint["args"]))
         terminal = bool(tasks) and all(canonical_status(task["status"]) in {"succeeded", "cancelled"}
                                        for task in tasks)
         completed = terminal and any(canonical_status(task["status"]) == "succeeded" for task in tasks) and all(
@@ -932,6 +942,7 @@ class TaskManager:
                     plan_id: str | None = None, expected_revision: int | None = None,
                     operations: list[dict[str, Any]] | None = None,
                     strategy_validator=None,
+                    execution_validator=None,
                     reason: str | None = None) -> WorkingPlan | dict[str, Any]:
         """Apply canonical operations or adapt the historical complexity/tasks shape."""
         if operations is not None:
@@ -939,7 +950,7 @@ class TaskManager:
                 raise ValueError("expected_revision is required for plan edits")
             return self.edit_plan(complexity=complexity, plan_id=plan_id,
                                   expected_revision=expected_revision, operations=operations, reason=reason,
-                                  strategy_validator=strategy_validator)
+                                  strategy_validator=strategy_validator, execution_validator=execution_validator)
         if not isinstance(tasks, list) or not tasks:
             raise ValueError("a Working Plan requires at least one task")
         saved = self.store.get_working_plan(
@@ -964,11 +975,9 @@ class TaskManager:
             else:
                 ref = f"legacy_{len(operations)}"
                 operations.append({"op": "add", "ref": ref, "task": fields})
-        if saved is None:
-            result = self.edit_plan(complexity=complexity, expected_revision=0, operations=operations)
-        else:
-            result = self.edit_plan(complexity=complexity, plan_id=saved["id"],
-                                    expected_revision=expected_revision, operations=operations)
+        self.edit_plan(complexity=complexity, plan_id=saved["id"] if saved else None,
+                       expected_revision=expected_revision, operations=operations,
+                       execution_validator=execution_validator)
         return self.working_plan
 
     def adopt_legacy_plan(self, *, complexity: str = "complex") -> WorkingPlan:
