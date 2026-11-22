@@ -106,6 +106,16 @@ class PlanValidationFeedbackTests(unittest.TestCase):
         self.assertTrue(reused.success, reused.text)
         self.assertEqual(copied, {name: task[name] for name in copied})
 
+    def test_active_plan_guidance_keeps_requested_behavior_names_in_task_descriptions(self):
+        self.create_read_task()
+        request = {"role": "user", "content": "Add a separate verification task for duplicate shipment IDs."}
+        messages = [request]
+        _refresh_working_plan_context(self.runtime, messages)
+        guidance = next(item["content"] for item in messages
+                        if item["content"].startswith("## Pinned Working Plan state\n"))
+        self.assertIn("Use the user's behavior names and domain terms verbatim in new task descriptions", guidance)
+        self.assertIn(request, messages)
+
     def test_pinned_plan_retains_legacy_execution_as_descriptive_state(self):
         created = self.create_read_task()
         execution = {"action": "read_file", "args": "catalog.py"}

@@ -414,6 +414,8 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         "including read-only checks. Tool calls before start cannot verify pending tasks. "
         "Successful matching verification can complete the running task automatically. "
         "Use each task's listed id when editing it and include only the fields you intend to change. "
+        "Use the user's behavior names and domain terms verbatim in new task descriptions "
+        "so each task can be traced back to the request. "
         "For ordinary pending tasks, reuse typed acceptance and execution from this pinned state. "
         "Preserve the approved criteria and execution of Strategic Plan objectives. "
         "Define verification before starting each task. An ordinary command criterion looks like "
