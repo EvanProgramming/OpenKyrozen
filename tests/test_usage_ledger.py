@@ -54,6 +54,17 @@ class UsageLedgerTests(unittest.TestCase):
             self.assertEqual(len(attempts), 1)
             self.assertEqual((attempts[0]["prompt_tokens"], attempts[0]["completion_tokens"]), (4, 2))
 
+            chunks[0].choices[0].delta.tool_calls[0].function.arguments = '{"path":"a","path":"b"}'
+            provider._client.chat.completions.create.return_value = iter(chunks)
+            with self.assertRaises(ProviderContractError) as error:
+                app.runtime._get_model_response([{"role": "user", "content": "Read a file"}],
+                    model="m", stream=True, tool_names={"read_file"})
+            self.assertFalse(error.exception.malformed_tool_json)
+            attempts = memory.store.list_usage_attempts()
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual([(item["prompt_tokens"], item["completion_tokens"]) for item in attempts],
+                             [(4, 2), (4, 2)])
+
     def test_google_model_tariffs_meter_children_and_reconstruct_display(self):
         from openkyrozen.agent.delegation import DelegationBudget
 

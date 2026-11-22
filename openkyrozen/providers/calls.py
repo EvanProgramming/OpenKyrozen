@@ -392,7 +392,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "response": model_response_to_dict(response),
                 }, request_id=request_id)
         except Exception as exc:
-            if not (isinstance(exc, ProviderContractError) and exc.malformed_tool_json and ledger.attempt_recorded):
+            if not (isinstance(exc, ProviderContractError) and ledger.attempt_recorded):
                 from openkyrozen.providers.usage import _track_cost
                 _track_cost(getattr(provider, "name", "unknown"), None, model=selected_model,
                             completion_state="failed")

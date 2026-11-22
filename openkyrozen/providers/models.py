@@ -55,19 +55,27 @@ def _validate_json(value: Any) -> None:
         raise ProviderContractError("Tool arguments must contain finite JSON values")
 
 
-def _unique_object(pairs):
+class _DuplicateToolArgument(ProviderContractError):
+    pass
+
+
+def _unique_object(pairs, *, allow_redundant=False):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ProviderContractError(f"Duplicate tool argument key: {key}")
+            if (not allow_redundant
+                    or _json_snapshot(result[key], "Tool argument", sort_keys=True)
+                    != _json_snapshot(value, "Tool argument", sort_keys=True)):
+                raise _DuplicateToolArgument("Duplicate tool argument key")
+            continue
         result[key] = value
     return result
 
 
-def _json_snapshot(value, label):
+def _json_snapshot(value, label, *, sort_keys=False):
     try:
         _validate_json(value)
-        return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"), sort_keys=sort_keys)
     except (TypeError, ValueError, RecursionError) as exc:
         raise ProviderContractError(f"{label} must be a finite JSON value") from exc
 
@@ -390,7 +398,8 @@ def normalize_finish(reason, *, has_calls=False, detail=None) -> FinishReason:
 
 
 def model_response(*, provider, model, text, usage, raw_finish_reason=None,
-                   calls=(), response_id=None, finish_detail=None, blocked=False, actual_model=None) -> ModelResponse:
+                   calls=(), response_id=None, finish_detail=None, blocked=False, actual_model=None,
+                   recover_duplicate_arguments=False) -> ModelResponse:
     """Build canonical calls from adapter-extracted (id, name, arguments) triples."""
     scope = response_id if isinstance(response_id, str) and response_id else "local_" + uuid.uuid4().hex
     parsed, synthesized = [], []
@@ -403,8 +412,11 @@ def model_response(*, provider, model, text, usage, raw_finish_reason=None,
                 arguments = json.loads(arguments, object_pairs_hook=_unique_object)
             except (ValueError, RecursionError) as exc:
                 error = ProviderContractError("Invalid serialized tool arguments")
+                error.argument_index = index
                 error.malformed_tool_json = (
-                    isinstance(exc, json.JSONDecodeError) and not blocked
+                    (isinstance(exc, json.JSONDecodeError)
+                     or recover_duplicate_arguments and isinstance(exc, _DuplicateToolArgument))
+                    and not blocked
                     and normalize_finish(raw_finish_reason, has_calls=True, detail=finish_detail)
                     == FinishReason.TOOL_REQUEST
                 )

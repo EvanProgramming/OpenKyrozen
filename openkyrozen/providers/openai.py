@@ -382,6 +382,7 @@ class OpenAIResponsesProvider(LLMProvider):
                                   calls=responses_output(response), response_id=getattr(response, "id", None),
                                   raw_finish_reason=getattr(response, "status", None),
                                   finish_detail=getattr(getattr(response, "incomplete_details", None), "reason", None),
+                                  recover_duplicate_arguments=True,
                                   blocked=any(getattr(part, "type", None) == "refusal"
                                               for item in getattr(response, "output", None) or ()
                                               for part in getattr(item, "content", None) or ()))
@@ -390,9 +391,16 @@ class OpenAIResponsesProvider(LLMProvider):
 
     @staticmethod
     def _completed_argument_copies(output, started_calls, done_events, finished_items):
-        from openkyrozen.providers.models import _unique_object, _validate_json
+        from functools import partial
+
+        from openkyrozen.providers.models import _DuplicateToolArgument, _json_snapshot, _unique_object, _validate_json
 
         copies = {}
+        tolerate_redundant = partial(_unique_object, allow_redundant=True)
+
+        def reject_inexact_number(_value):
+            raise ValueError("Cannot compare decimal argument copies without rounding")
+
         for index, event in done_events.items():
             if event is None or index >= len(output) or index not in started_calls:
                 continue
@@ -408,7 +416,7 @@ class OpenAIResponsesProvider(LLMProvider):
                     or not started["name"] or started["name"] != getattr(item, "name", None)
                     or getattr(event, "name", None) not in (None, started["name"])
                     or not isinstance(original, str) or not isinstance(candidate, str)
-                    or candidate == original or started["arguments"] not in ("", candidate)):
+                    or started["arguments"] not in ("", candidate)):
                 continue
             if index in finished_items:
                 finished = finished_items[index]
@@ -420,10 +428,20 @@ class OpenAIResponsesProvider(LLMProvider):
                         or getattr(finished, "arguments", None) != candidate):
                     continue
             try:
-                json.loads(original)
-            except json.JSONDecodeError:
+                json.loads(original, object_pairs_hook=_unique_object)
+            except (json.JSONDecodeError, _DuplicateToolArgument) as error:
                 try:
-                    parsed = json.loads(candidate, object_pairs_hook=_unique_object)
+                    if isinstance(error, _DuplicateToolArgument):
+                        # Both correlated copies must carry identical typed values.
+                        parsed = json.loads(candidate, object_pairs_hook=tolerate_redundant,
+                                            parse_float=reject_inexact_number)
+                        declared = json.loads(original, object_pairs_hook=tolerate_redundant,
+                                              parse_float=reject_inexact_number)
+                        candidate = _json_snapshot(parsed, "Tool arguments", sort_keys=True)
+                        if candidate != _json_snapshot(declared, "Tool arguments", sort_keys=True):
+                            continue
+                    else:
+                        parsed = json.loads(candidate, object_pairs_hook=_unique_object)
                     _validate_json(parsed)
                 except (ValueError, RecursionError):
                     continue
@@ -532,6 +550,7 @@ class OpenAIResponsesProvider(LLMProvider):
                 text=text, usage=usage, calls=responses_output(final), response_id=getattr(final, "id", None),
                 raw_finish_reason=getattr(final, "status", None),
                 finish_detail=getattr(getattr(final, "incomplete_details", None), "reason", None),
+                recover_duplicate_arguments=True,
                 blocked=any(getattr(part, "type", None) == "refusal" for item in output
                     for part in getattr(item, "content", None) or ()))
             copies = {}
@@ -567,11 +586,12 @@ class OpenAIResponsesProvider(LLMProvider):
                             "Unterminated string starting at", "Invalid control character at",
                             r"Invalid \escape", r"Invalid \uXXXX escape",
                         } else "Invalid JSON"
-                        failed = [getattr(item, "name", None) for item in output
-                                  if getattr(item, "type", None) == "function_call"
-                                  and getattr(item, "arguments", None) == cause.doc]
-                        if len(failed) == 1 and any(tool["name"] == failed[0] for tool in tools or ()):
-                            exc.wire_evidence["declared_tool"] = failed[0]
+                    else:
+                        exc.wire_evidence["json_error"] = "Duplicate object member"
+                    planned_calls = [item for item in output if getattr(item, "type", None) == "function_call"]
+                    failed_name = getattr(planned_calls[exc.argument_index], "name", None)
+                    if any(tool["name"] == failed_name for tool in tools or ()):
+                        exc.wire_evidence["declared_tool"] = failed_name
                     raise
             continuation = _snapshot_from_sdk(output)
             for index, arguments in copies.items():

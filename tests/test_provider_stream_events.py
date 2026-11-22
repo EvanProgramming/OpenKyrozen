@@ -521,11 +521,22 @@ class StreamEventContractTests(unittest.TestCase):
         tool = {"name": "read_file", "description": "read", "parameters": {"type": "object"}}
         messages = [{"role": "user", "content": "go"}]
         for case in ("matched", "initial fragment", "wrong id", "wrong name", "duplicate", "invalid",
+                     "redundant terminal", "redundant copies", "conflicting terminal", "typed conflict", "precision conflict",
+                     "terminal and copies disagree",
                      "fragments disagree", "wrong delta id", "duplicate open", "conflicting item",
                      "incomplete", "wrong terminal status", "second call invalid"):
             with self.subTest(case=case), patch("openkyrozen.providers.usage._track_cost") as track:
                 item = SimpleNamespace(type="function_call", id="fc-1", call_id="call-1",
                     name="read_file", arguments='{"path":')
+                if case in ("redundant terminal", "redundant copies", "terminal and copies disagree"):
+                    item.arguments = '{"path":"x","path":"x"}'
+                elif case == "conflicting terminal":
+                    item.arguments = '{"path":"x","path":"y"}'
+                elif case == "typed conflict":
+                    item.arguments = '{"path":true,"path":1}'
+                elif case == "precision conflict":
+                    item.arguments = '{"path":9007199254740992.0,"path":9007199254740993.0}'
+                original_arguments = item.arguments
                 status = "incomplete" if case == "incomplete" else "completed"
                 response = SimpleNamespace(id="resp", model="m",
                     status="tool_calls" if case == "wrong terminal status" else status, output_text="",
@@ -537,12 +548,15 @@ class StreamEventContractTests(unittest.TestCase):
                 done = SimpleNamespace(type="response.function_call_arguments.done", output_index=0,
                     item_id="other" if case == "wrong id" else item.id,
                     name="write_file" if case == "wrong name" else item.name,
-                    arguments='{"path":"x","path":"y"}' if case == "invalid" else arguments)
+                    arguments=('{"path":"x","path":"y"}' if case == "invalid"
+                               else item.arguments if case == "redundant copies"
+                               else '{"path":9007199254740992.0}' if case == "precision conflict"
+                               else '{"path":"y"}' if case == "terminal and copies disagree" else arguments))
                 prefix = arguments[:3] if case == "initial fragment" else ""
                 opening_item = SimpleNamespace(**{**vars(item), "arguments": prefix})
                 opening = SimpleNamespace(type="response.output_item.added", output_index=0, item=opening_item)
                 completed_item = SimpleNamespace(**{**vars(item),
-                    "arguments": '{"path":"y"}' if case == "conflicting item" else arguments})
+                    "arguments": '{"path":"y"}' if case == "conflicting item" else done.arguments})
                 stream = [
                     opening,
                     *([opening] if case == "duplicate open" else []),
@@ -561,7 +575,7 @@ class StreamEventContractTests(unittest.TestCase):
                 provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
                 events = list(get_model_events(provider, messages, "m", tools=[tool]))
                 track.assert_called_once()
-                if case not in {"matched", "initial fragment"}:
+                if case not in {"matched", "initial fragment", "redundant terminal", "redundant copies"}:
                     self.assertIsInstance(events[-1], ResponseError)
                     self.assertFalse(any(isinstance(event, ResponseComplete) for event in events))
                     if case == "invalid":
@@ -572,12 +586,18 @@ class StreamEventContractTests(unittest.TestCase):
                     if case == "second call invalid":
                         self.assertTrue(events[-1].error.malformed_tool_json)
                         self.assertEqual(len(events[-1].error.wire_evidence["terminal"]), 2)
+                    if case in ("conflicting terminal", "typed conflict", "precision conflict", "terminal and copies disagree"):
+                        self.assertTrue(events[-1].error.malformed_tool_json)
+                        wire = events[-1].error.wire_evidence
+                        self.assertEqual(wire["json_error"], "Duplicate object member")
+                        self.assertEqual(wire["declared_tool"], "read_file")
+                        self.assertNotIn(original_arguments, repr(wire))
                     continue
                 self.assertIsInstance(events[-1], ResponseComplete)
                 result = events[-1].response
                 self.assertEqual(result.tool_calls[0].arguments, {"path": "x"})
                 self.assertEqual(result.continuation.payload["output"][0]["arguments"], arguments)
-                self.assertEqual(item.arguments, '{"path":')
+                self.assertEqual(item.arguments, original_arguments)
                 create.return_value = SimpleNamespace(id="end", model="m", status="completed",
                     output_text="done", usage=None, output=[])
                 provider.chat_response([*messages, result, ToolReply("call-1", "read_file", {"value": "ok"})],
