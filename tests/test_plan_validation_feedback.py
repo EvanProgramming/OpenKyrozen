@@ -912,7 +912,10 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                 self.calls += 1
                 if self.calls == 1:
                     plan_tool = next(tool for tool in tools if tool["name"] == "update_plan")
-                    case.assertIn("exits zero only when the expected failure is observed", plan_tool["description"])
+                    description = plan_tool["description"]
+                    case.assertIn("Run a failing reproduction command by itself first", description)
+                    case.assertIn("keep its own exit status", description)
+                    case.assertNotIn("exits zero only when the expected failure is observed", description)
                     call = ToolCall("mismatch", "run_cmd", actual)
                 elif self.calls == 2:
                     reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "mismatch")
@@ -979,6 +982,7 @@ class PlanValidationFeedbackTests(unittest.TestCase):
                     )
                     from openkyrozen.tools.manifest import ToolRegistry
                     plan_tool = next(tool for tool in tools if tool["name"] == "update_plan")
+                    case.assertIn("Run a failing reproduction command by itself first", plan_tool["description"])
                     creation = plan_tool["parameters"]
                     case.assertEqual(set(creation["properties"]), {"expected_revision", "operations"})
                     case.assertEqual(set(creation["required"]), set(creation["properties"]))

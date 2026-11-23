@@ -148,7 +148,10 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             if not can_bind_command:
                 unavailable.add("bind_command_check")
             add_command_guidance = (
-                "Use add_command_check with ref, description and command for new verification work. "
+                "Use add_command_check with ref, description and command. "
+                "Run a failing reproduction command by itself first and keep its own exit status. "
+                "For a required reproduction, select its exact command check first, then replace the failed "
+                "check with the post-fix test using replace_command_check. "
                 if can_add_command else ""
             )
             if not can_add_command:
@@ -198,8 +201,6 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                                             "description": "Optional rationale for the plan edit."}
                     criterion_guidance = (
                         f"{add_command_guidance}Use update to set other typed criteria before start in the same call. "
-                        "For a typed check of an expected failure, "
-                        "bind a run_cmd check that exits zero only when the expected failure is observed. "
                         if ordinary_plan_edit else "Preserve approved criteria and request renewed approval for material changes. "
                     )
                     if can_bind_command:

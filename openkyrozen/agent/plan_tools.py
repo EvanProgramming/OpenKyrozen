@@ -80,8 +80,10 @@ def _update_plan(self, arguments: dict):
     For a test task, add a criterion/verification object with action run_cmd and
     the exact arguments you will run, including any options. Start the task
     before running that command. A verified zero exit status satisfies this
-    criterion. A failed reproduction remains evidence of the bug; use a
-    separate task with a successful check for the fix.
+    criterion. Run a failing reproduction command by itself first and keep
+    its own exit status. Select its exact command check first. After the
+    failure, replace that check with the post-fix test using
+    replace_command_check.
     Refine a pending prose-only task with an update before starting it. If
     its verification changes after start, cancel it and add a new task.
     Use start with a stable returned task ID before
