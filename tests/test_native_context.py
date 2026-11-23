@@ -735,6 +735,49 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual(receipt["success"], has_pending)
                 self.assertIsNone(receipt["task_id"])
 
+    def test_native_inspection_finishes_batch_after_matching_read_verifies_task(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        (self.root / "other.txt").write_text("other\n", encoding="utf-8")
+        permitted = {"update_plan", "read_file", "list_dir", "list_tree", "run_cmd"}
+
+        for has_pending in (False, True):
+            with self.subTest(has_pending=has_pending):
+                self.runtime.tasks.clear()
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        operations = [{"op": "add_read_check", "ref": "inspect", "path": "notes.txt"}]
+                        if has_pending:
+                            operations.append({"op": "add_read_check", "ref": "other", "path": "other.txt"})
+                        operations.append({"op": "start", "task": "inspect"})
+                        calls = (ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": operations}),)
+                    elif step == 2:
+                        calls = (
+                            ToolCall("read", "read_file", {"path": "notes.txt"}),
+                            ToolCall("list", "list_dir", {"path": "."}),
+                            ToolCall("tree", "list_tree", {"path": "."}),
+                            ToolCall("other", "read_file", {"path": "other.txt"}),
+                            ToolCall("stale-shell", "run_cmd", {"command": "exit 0"}),
+                        )
+                    else:
+                        return ModelResponse(text="The note is ready.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"calls": len(calls)}))
+
+                _, turn, _ = self.run_native(self.provider(respond), [{"role": "user", "content": "Review the note."}],
+                                             complexity="complex", permitted=permitted)
+                receipts = {record["call_id"]: record for record in turn.tool_records}
+                self.assertTrue(receipts["read"]["success"])
+                self.assertEqual(receipts["read"]["task_id"], self.runtime.tasks.tasks[0]["id"])
+                for call_id in ("list", "tree", "other"):
+                    self.assertTrue(receipts[call_id]["success"], receipts[call_id])
+                    self.assertIsNone(receipts[call_id]["task_id"])
+                self.assertFalse(receipts["stale-shell"]["authorized"])
+                self.assertEqual(receipts["stale-shell"]["failure"], "invalid_arguments")
+                self.assertEqual([task["status"] for task in self.runtime.tasks.tasks],
+                                 ["succeeded", "pending"] if has_pending else ["succeeded"])
+
     def test_native_delegation_guidance_tracks_the_working_plan_gate_and_permission(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for delegation_allowed in (True, False):

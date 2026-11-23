@@ -106,6 +106,23 @@ class DelegatedPlanningTests(unittest.TestCase):
             self.assertFalse(spec.parallel_safe)
             self.assertEqual(parent_spec.capability, 'write')
             self.assertNotIn('write', runtime.execution_context.capability_token.capabilities)
+            unavailable_checks = [
+                {'op': 'add_command_check', 'ref': 'tests', 'description': 'Run tests',
+                 'command': 'python -m unittest discover'},
+                {'op': 'add', 'ref': 'tests', 'task': {
+                    'description': 'Run tests', 'acceptance': [{'criterion': 'Tests pass',
+                        'verification': {'action': 'run_cmd', 'arguments': {'command': 'python -m unittest discover'}}}]}},
+                {'op': 'add_read_check', 'ref': 'outside', 'path': 'outside.txt'},
+            ]
+            for operation in unavailable_checks:
+                denied = runtime.execute_call(child, ToolCall('readonly-plan-denial', 'update_plan', {
+                    'expected_revision': 0, 'operations': [
+                        {'op': 'add_read_check', 'ref': 'inspect', 'path': 'marker.txt'}, operation,
+                        {'op': 'start', 'task': 'inspect'},
+                    ],
+                }))
+                self.assertFalse(denied.success, operation)
+                self.assertIsNone(child.tasks.working_plan)
             created = runtime.execute_call(child, ToolCall('readonly-plan', 'update_plan', {
                 'expected_revision': 0, 'operations': [{'op': 'add', 'ref': 'inspect', 'task': {
                     'description': 'Inspect assigned file', 'acceptance': ['Inspected'],
@@ -179,6 +196,14 @@ class DelegatedPlanningTests(unittest.TestCase):
                 observed.append(set(item['name'] for item in tools))
                 if not replies:
                     self_case.assertEqual(observed[-1], {'update_plan', 'read_tool_artifact'})
+                    declaration = next(tool for tool in tools if tool['name'] == 'update_plan')
+                    projected = json.dumps(declaration)
+                    self_case.assertIn('add_read_check', projected)
+                    self_case.assertNotIn('add_command_check', projected)
+                    self_case.assertNotIn('run_cmd', projected)
+                    pinned = next(item['content'] for item in messages if isinstance(item, dict)
+                                  and item.get('content', '').startswith('## Pinned Working Plan state'))
+                    self_case.assertNotIn('python -m unittest', pinned)
                     call = ToolCall('local-plan', 'update_plan', {'expected_revision': 0, 'operations': [
                         {'op': 'add', 'ref': 'inspect', 'task': {'description': 'Inspect assigned marker source',
                             'acceptance': ['Report exact checked source'],

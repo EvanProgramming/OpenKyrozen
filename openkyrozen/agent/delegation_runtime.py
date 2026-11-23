@@ -488,28 +488,41 @@ def _delegation_tool_access(self, action, args):
                     raise PermissionError("Child plan arguments must be a structured object") from exc
             if not isinstance(plan_arguments, dict):
                 raise PermissionError("Child plan arguments must be a structured object")
-            def executions(value):
-                if isinstance(value, dict):
-                    for key, item in value.items():
-                        if key == "execution" and isinstance(item, dict):
-                            yield item
-                        else:
-                            yield from executions(item)
-                elif isinstance(value, list):
-                    for item in value:
-                        yield from executions(item)
+            def task_actions(task):
+                if "execution" in task:
+                    yield task["execution"]
+                for criterion in task.get("acceptance", ()):
+                    if isinstance(criterion, dict):
+                        yield criterion["verification"]
 
-            for execution in executions(plan_arguments):
-                name = self._operation_action(execution.get("action", ""))
-                arguments = execution.get("arguments")
+            def planned_actions():
+                for task in plan_arguments.get("tasks", ()):
+                    yield from task_actions(task)
+                for op in plan_arguments.get("operations", ()):
+                    if op["op"] in {"add_command_check", "bind_command_check", "replace_command_check"}:
+                        yield {"action": "run_cmd", "arguments": {"command": op["command"]}}
+                    elif op["op"] == "add_read_check":
+                        yield {"action": "read_file", "arguments": {"path": op["path"]}}
+                    elif op["op"] == "add":
+                        yield from task_actions(op["task"])
+                    elif op["op"] == "update":
+                        yield from task_actions(op["fields"])
+                    elif op["op"] == "split":
+                        for child in op["children"]:
+                            yield from task_actions(child["task"])
+                    elif op["op"] in {"replace", "merge"}:
+                        yield from task_actions(op["replacement"]["task"])
+
+            for execution in planned_actions():
+                name = self._operation_action(execution["action"])
+                arguments = execution["arguments"]
                 target = self.tool_registry.specs.get(name)
                 if (name == "update_plan" or name in TOOLS or target is None
                         or name not in (context.delegation_tools or ())
                         or not context.capability_token.allows(target.capability)
                         or self.tool_registry._argument_error(target.input_schema, arguments)):
-                    raise PermissionError("Child plan execution exceeds its delegated tool authority")
-                # Stored execution checkpoints may later reach a durable worker;
-                # validate their scope now, while the child boundary is present.
+                    raise PermissionError(f"Child plan action '{name}' exceeds its delegated tool authority")
+                # Stored checks and checkpoints can reach a worker later.
                 with self._delegation_tool_access(name, arguments):
                     pass
         run = coordinator.runs[context.child_run_id]

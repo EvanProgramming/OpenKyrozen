@@ -327,11 +327,13 @@ def _refresh_working_plan_context(self, messages: list) -> None:
             verification["expect"] = criterion["expect"]
         return {"criterion": criterion["criterion"], "verification": verification}
 
+    permitted = self._permitted_tool_names()
+    can_use_shell = "run_cmd" in permitted and not self.execution_context.child_run_id
     test_command_guidance = (
         "Leave the test command open until inspection identifies the runner. "
         "Use the project test command, or python -m unittest for a standard-library unittest suite "
         "without a configured runner. "
-    )
+    ) if can_use_shell else ""
     marker = "## Pinned Working Plan state\n"
     previous = list(messages)
     messages[:] = [item for item in messages if not (
@@ -351,7 +353,7 @@ def _refresh_working_plan_context(self, messages: list) -> None:
             completed_tasks = []
     if (plan is None or plan.status not in {"active", "completed"}
             or completed_tasks == [] or not callable(snapshot)):
-        if plan is None and callable(snapshot) and "update_plan" in self._permitted_tool_names():
+        if plan is None and callable(snapshot) and "update_plan" in permitted:
             messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
                 "No Working Plan exists. Follow the current update_plan declaration. "
                 "Start the task explicitly before performing its work. "
@@ -418,12 +420,16 @@ def _refresh_working_plan_context(self, messages: list) -> None:
         "so each task can be traced back to the request. "
         "For ordinary pending tasks, reuse typed acceptance and execution from this pinned state. "
         "Before editing files, select a task with typed verification or an exact declared execution. "
-        "A just-selected prose-only task can bind a command check before any work runs. "
         "Preserve the approved criteria and execution of Strategic Plan objectives. "
-        "Define verification before starting each task. An ordinary command criterion looks like "
-        '{"criterion":"Tests pass","verification":{"action":"run_cmd","arguments":{"command":"python -m unittest test_example.py"}}}. '
-        "Preserve the test runner's exit status when collecting failure evidence. "
-        f"{test_command_guidance}"
+        "Define verification before starting each task. "
+        + (
+            "A just-selected prose-only task can bind a command check before any work runs. "
+            "An ordinary command criterion looks like "
+            '{"criterion":"Tests pass","verification":{"action":"run_cmd","arguments":{"command":"python -m unittest test_example.py"}}}. '
+            "Preserve the test runner's exit status when collecting failure evidence. "
+            + test_command_guidance
+            if can_use_shell else ""
+        )
     ) + "\n" + full})
     update_projection = getattr(self, "_update_context_history_projection", None)
     if callable(update_projection):

@@ -94,6 +94,23 @@ def _bounded_provider_stream(self, provider: Any, messages: list[dict[str, str]]
         return "".join(chunks).strip()
 
 
+def _restrict_plan_verification(schema, available):
+    """Keep typed criterion alternatives whose evidence tool can run."""
+    properties = schema.get("properties", {})
+    if "verification" in properties:
+        action = properties["verification"]["properties"]["action"]
+        action["enum"] = [name for name in action["enum"] if name in available]
+        return bool(action["enum"])
+    if "anyOf" in schema:
+        schema["anyOf"] = [option for option in schema["anyOf"]
+                           if _restrict_plan_verification(option, available)]
+        if not schema["anyOf"]:
+            return False
+    if "items" in schema and not _restrict_plan_verification(schema["items"], available):
+        return False
+    return all(_restrict_plan_verification(value, available) for value in properties.values())
+
+
 def _get_model_response(self, messages: list[dict], model: str | None = None, *, tool_names=None,
                         history_tool_names=(), stream: bool = False, on_event=None,
                         _native_tool_phase: str | None = None) -> ModelResponse:
@@ -131,8 +148,17 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             interaction = self._interaction_controller.state()
             accepted = interaction.get("executing_plan")
             ordinary_plan_edit = not accepted or accepted.get("working_plan_id") != getattr(plan, "id", None)
-            can_add_command = not accepted and not interaction.get("pending_plan")
-            ordinary_followup = _native_tool_phase == "plan_completed" and can_add_command
+            permitted = self._permitted_tool_names()
+            verification_tools = {name for name in {"read_file", "run_cmd", "git_show"} & permitted
+                                  if registry.specs[name].capability in allowed}
+            # Shell execution cannot be confined to a delegated file assignment.
+            if self.execution_context.child_run_id:
+                verification_tools.discard("run_cmd")
+            _restrict_plan_verification(schema, verification_tools)
+            ordinary_work = not accepted and not interaction.get("pending_plan")
+            can_add_command = ordinary_work and "run_cmd" in verification_tools
+            can_add_read = ordinary_plan_edit and "read_file" in verification_tools
+            ordinary_followup = _native_tool_phase == "plan_completed" and ordinary_work
             from openkyrozen.tasks.engine import can_bind_command_check, can_replace_complete_read_check
             command_tasks = [task for task in self.tasks.tasks if task["id"] in plan.task_ids] if (
                 _native_tool_phase == "plan_active" and plan is not None
@@ -157,7 +183,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             )
             if not can_add_command:
                 unavailable.add("add_command_check")
-            if not ordinary_plan_edit:
+            if not can_add_read:
                 unavailable.add("add_read_check")
             for shape in (schema, *schema.get("anyOf", ())):
                 operations = shape.get("properties", {}).get("operations")
@@ -184,9 +210,10 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     },
                 }
                 plan_tool["description"] = (
-                    "Create the required Working Plan at revision zero. For inspection of unknown file contents, "
-                    "use add_read_check with ref and path. "
-                    f"{add_command_guidance}Use add for other work. "
+                    "Create the required Working Plan at revision zero. "
+                    + ("For inspection of unknown file contents, use add_read_check with ref and path. "
+                       if can_add_read else "")
+                    + f"{add_command_guidance}Use add for other work. "
                     "In the same call, start the first task by its ref."
                 )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
@@ -274,8 +301,10 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                             "to 0, add tasks for the remaining work, and start the first task by its ref."
                             if command_followup else
                             " If work remains, omit plan_id, set expected_revision to 0, add tasks, and start the "
-                            "first task by its ref. Use add_command_check for command verification."
+                            "first task by its ref."
                         )
+                        if can_add_command and not command_followup:
+                            plan_tool["description"] += " Use add_command_check for command verification."
                 projected = {"type": "object", "additionalProperties": False,
                              "required": required, "properties": properties}
                 plan_tool["parameters"] = ({"type": "object", "anyOf": [*alternatives, projected]}

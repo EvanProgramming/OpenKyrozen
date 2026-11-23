@@ -826,6 +826,11 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     plan_delegation = (call_id_source == "native" and task_plan_id is not None
                        and canonical in {"spawn_agents", "wait_subagents"}
                        and expected_spec is not None and expected_spec.source == "builtin")
+    inspection = (call_id_source == "native" and canonical in {
+        "read_file", "list_dir", "list_tree", "search_files", "find_files",
+    } and expected_spec is not None and expected_spec.source == "builtin"
+        and expected_spec.capability == "read" and expected_spec.side_effects in {"read", "read_only"})
+    selected_task_id = task_id
     if plan_delegation:
         task_id = None
 
@@ -835,7 +840,15 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             return False
         if plan_delegation:
             return plan.status == "active" or (canonical == "wait_subagents" and plan.status == "completed")
-        return self.tasks.execution_task_id == task_id
+        active_task_id = self.tasks.execution_task_id
+        if active_task_id == selected_task_id:
+            return True
+        # An earlier receipt in this response can finish the selected task.
+        # Finish only the remaining inspections, without binding their evidence.
+        return (inspection and active_task_id is None and plan.status in {"active", "completed"}
+                and selected_task_id in plan.task_ids
+                and any(task["id"] == selected_task_id and task["status"] == "succeeded"
+                        for task in self.tasks.tasks))
 
     if task_plan_id is not None and not local_binding_valid():
         emit_rejected_call()
@@ -846,6 +859,8 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             call_id=call_id, call_id_source=call_id_source, task_id=task_id,
             task_plan_id=task_plan_id, expected_spec=expected_spec,
         )
+    if inspection and task_plan_id is not None and self.tasks.execution_task_id != selected_task_id:
+        task_id = None
     native_arguments = isinstance(args, dict) and call_id_source == "native"
     if isinstance(args, dict) and not native_arguments:
         emit_rejected_call()
