@@ -486,6 +486,42 @@ class NativeContextTests(unittest.TestCase):
                     self.assertEqual([record["action"] for record in turn.tool_records],
                                      ["update_plan", "read_file", "update_plan"])
 
+    def test_native_command_check_accepts_only_a_redundant_workspace_cwd(self):
+        (self.root / "nested").mkdir()
+        command = "echo verified"
+        for overrides, matched in (
+            ({"cwd": "."}, True),
+            ({"cwd": str(self.root.resolve())}, True),
+            ({"cwd": "nested"}, False),
+            ({"cwd": ".", "env": {"KYROZEN_TEST_OTHER_ENV": "changed"}}, False),
+        ):
+            with self.subTest(overrides=overrides):
+                self.runtime.tasks.clear()
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_command_check", "ref": "check", "description": "Verify workspace command",
+                             "command": command},
+                            {"op": "start", "task": "check"},
+                        ]})
+                    elif step == 2:
+                        call = ToolCall("verify", "run_cmd", {"command": command, **overrides})
+                    else:
+                        reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "verify")
+                        self.assertFalse(reply.is_error, reply.output)
+                        return ModelResponse(text="The command returned successfully.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                _, turn, _ = self.run_native(self.provider(respond), [{"role": "user", "content": "Verify the command."}],
+                                             complexity="complex", permitted={"update_plan", "run_cmd"})
+                receipt = next(record for record in turn.tool_records if record["call_id"] == "verify")
+                self.assertEqual(json.loads(receipt["args"]), {"command": command, **overrides})
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed" if matched else "active")
+                self.assertEqual(bool(receipt["task_id"]), matched)
+
     def test_native_expected_exit_verifies_task_without_changing_command_result(self):
         import shlex
 

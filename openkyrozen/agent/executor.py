@@ -1139,10 +1139,28 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
                 whole_read_args = json.dumps({"path": path}, ensure_ascii=False, separators=(",", ":"))
         else:
             criterion_status = "unavailable"
+    matching_fingerprint = None if legacy_contract else receipt.args_sha256
+    native_command = (local_scope and explicit_task_id and receipt.authorized and receipt.call_id_source == "native"
+                      and receipt.tool_source == "builtin" and receipt.action == "run_cmd"
+                      and verification.get("method") == "command_exit_status")
+    if native_command:
+        checkpoint = active_task.get("checkpoint") or {}
+        declared_criteria = active_task["acceptance"]
+        arguments = receipt.arguments or {}
+        cwd = arguments.get("cwd")
+        # The builtin defaults to the workspace root. Match that ordinary
+        # check without altering the original invocation or its receipt.
+        if (not legacy_contract and not checkpoint.get("strategic_plan") and isinstance(cwd, str)
+                and Path(cwd) in {Path("."), self._get_workspace_root()}):
+            default_cwd_args = json.dumps({key: value for key, value in arguments.items() if key != "cwd"},
+                                          ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+            if any(isinstance(criterion, dict) and criterion.get("id", "").startswith("command-ac-")
+                   and criterion.get("action") == "run_cmd" and criterion.get("args") == default_cwd_args
+                   for criterion in declared_criteria):
+                matching_args = default_cwd_args
+                matching_fingerprint = hashlib.sha256(default_cwd_args.encode("utf-8")).hexdigest()
     failed_command_exit_code = None
-    if (local_scope and explicit_task_id and receipt.authorized and receipt.call_id_source == "native"
-            and receipt.tool_source == "builtin" and receipt.action == "run_cmd" and not receipt.success
-            and receipt.failure == "command_failed" and verification.get("method") == "command_exit_status"
+    if (native_command and not receipt.success and receipt.failure == "command_failed"
             and not (receipt.arguments or {}).get("background")):
         criteria = active_task["acceptance"]
         checkpoint = active_task.get("checkpoint") or {}
@@ -1155,7 +1173,7 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     evidence = {} if not reconcile_locally or receipt.action in TOOLS or not should_reconcile else task_manager.record_evidence(
         task_id=explicit_task_id, action=receipt.action, args=matching_args,
         args_projection=receipt_projection["args"],
-        args_fingerprint=None if legacy_contract else receipt.args_sha256,
+        args_fingerprint=matching_fingerprint,
         result=receipt_projection["result"], success=receipt.success,
         acceptance=task_acceptance, receipt_id=receipt.receipt_id,
         verification_status=criterion_status, verification_result=read_content,

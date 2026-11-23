@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import random
+import re
 import threading
 import time
 import uuid
@@ -19,6 +20,10 @@ from openkyrozen.tools.catalog import builtin_names
 TOOLS = builtin_names("orchestration")
 TERMINAL = {"succeeded", "unverified", "failed", "blocked", "cancelled", "interrupted"}
 REPORT_LISTS = ("findings", "evidence", "artifacts", "checks", "uncertainties", "suggested_followups")
+_DELEGATED_COMMAND_OUTPUT = re.compile(
+    r"\b(?:test\s+)?commands?(?:\s*\(s\))?\s+(?:(?:were|it)\s+)?(?:run|executed)\b"
+    r"[^.!?\n]{0,80}\b(?:output|exit\s+(?:code|status))\b", re.IGNORECASE,
+)
 GUIDANCE = '''Delegate automatically when independent work can run in parallel or a specialist can
 materially improve the result. Do not delegate greetings, single lookups, or duplicate work.
 The user never needs to mention agents, parallelism, or verification. Detect the need from the work.
@@ -346,8 +351,15 @@ class Delegation:
                 raise DelegationRequestError("Assignment requires a string array: " + key)
         if not brief["acceptance"] or not brief["deliverables"]:
             raise DelegationRequestError("Acceptance and deliverables cannot be empty")
-        if brief.get("profile", "researcher") not in self.profiles:
+        profile = self.profiles.get(brief.get("profile", "researcher"))
+        if profile is None:
             raise DelegationRequestError("Unknown sub-agent profile")
+        if profile.capabilities == "readonly" and any(
+                _DELEGATED_COMMAND_OUTPUT.search(text)
+                for text in (*brief["acceptance"], *brief["deliverables"])):
+            raise DelegationRequestError(
+                "A read-only specialist cannot run tests or capture command output. "
+                "Assign source findings and a recommended test command. Run it in the main turn.")
         if brief.get("risk", "normal") not in {"low", "normal", "high"}:
             raise DelegationRequestError("risk must be low, normal, or high")
         for key in ("provider", "model", "custom_profile", "id"):

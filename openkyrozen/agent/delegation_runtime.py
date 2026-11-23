@@ -135,9 +135,10 @@ def _typed_json_args(args):
 def spawn_agents(self, args):
     """Start independent specialist assignments in parallel.
     Each assignment needs objective, context, reason, scope (exact paths), dependencies (use [] if none),
-    acceptance and deliverables (nonempty lists). Use profile researcher for read-only
-    review or coder for disjoint edits. Start independent work while the plan is active
-    and use wait_subagents with the returned run IDs to collect the verified results.
+    acceptance and deliverables (nonempty lists). Assign source inspection and a recommended
+    test command to a researcher, or scoped edits to a coder. Run required commands and capture
+    their output in the main turn. Start independent work while the plan is active and use
+    wait_subagents with the returned run IDs to collect the verified results.
     """
     if self.execution_context.child_run_id:
         raise ValueError("Only the main agent can delegate")
@@ -373,7 +374,8 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
         + task + "\n\n"
         + ("For this read-only assignment, batch independent reads and use one inventory if needed. "
            "Stop when the acceptance is checked. Include the substantive conclusion, exact references, "
-           "and any verification command in the concise summary. Cite each receipt once in evidence.\n\n"
+           "and any recommended verification command in the concise summary. The parent executes tests. "
+           "Use Git tools only when the assignment calls for Git evidence. Cite each receipt once in evidence.\n\n"
            if not review and not report_repair and "write" not in capabilities else "")
         + ("Return only a JSON review with verdict (verified|changes_requested|unverifiable), summary, findings, and evidence. "
            "A verified verdict requires independent tool inspection and evidence bound to actual receipts."

@@ -88,6 +88,21 @@ class DelegationTests(unittest.TestCase):
         self.assertFalse(receipt['success'])
         self.assertIn('could not be converted', receipt['result'])
 
+    def test_readonly_assignment_rejects_execution_output_before_dispatch(self):
+        from openkyrozen.agent.delegation import DelegationBudget, DelegationRequestError
+
+        coordinator = self.runtime.delegation()
+        assignment = {**brief(0), "profile": "researcher",
+                      "acceptance": ["Report includes the exact test command(s) run and verbatim output summary"]}
+        budget = DelegationBudget()
+        remaining = budget.remaining_picos
+        with self.assertRaisesRegex(DelegationRequestError, "Run it in the main turn"):
+            coordinator.spawn([assignment], budget=budget)
+        self.assertEqual(coordinator.list(), [])
+        self.assertEqual(budget.remaining_picos, remaining)
+        valid = {**assignment, "acceptance": ["Cite the test assertion and recommend the verification command"]}
+        self.assertEqual(coordinator._brief(valid)["acceptance"], valid["acceptance"])
+
     def test_reviewer_receipt_arguments_match_structured_artifact_paths(self):
         from openkyrozen.agent.subagent_runtime import _receipt_argument
         self.assertEqual(_receipt_argument({'path': 'delivered.txt'}, 'path'), 'delivered.txt')
