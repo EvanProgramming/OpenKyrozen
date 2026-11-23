@@ -28,7 +28,7 @@ def _text(value: Any, field: str, limit: int) -> str:
     return value
 
 
-def validate_acceptance_verification(verification, *, allow_complete_read=False):
+def validate_acceptance_verification(verification, *, allow_complete_read=False, allow_command_exit=False):
     """Shared exact verification contract for approved and ordinary plan criteria."""
     if (not isinstance(verification, dict)
             or set(verification) not in ({"action", "arguments"}, {"action", "arguments", "expect"})
@@ -48,7 +48,12 @@ def validate_acceptance_verification(verification, *, allow_complete_read=False)
                 or ("contains" in expect and not expect["contains"])):
             raise InteractionError("read_file verification requires a nonempty equals or contains predicate")
     elif "expect" in verification:
-        raise InteractionError("expected-result predicates are currently supported only for read_file")
+        expect = verification["expect"]
+        if not (allow_command_exit and verification["action"] == "run_cmd"
+                and isinstance(expect, dict) and set(expect) == {"exit_code"}
+                and type(expect["exit_code"]) is int and 1 <= expect["exit_code"] <= 255
+                and not verification["arguments"].get("background")):
+            raise InteractionError("command exit expectations require an ordinary foreground check and a nonzero exit code")
     try:
         json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:

@@ -242,7 +242,7 @@ class TaskManager:
         return True
 
     @staticmethod
-    def _plan_task_fields(task: Any, *, allow_complete_read: bool = False) -> dict[str, Any]:
+    def _plan_task_fields(task: Any, *, ordinary_plan: bool = False) -> dict[str, Any]:
         if not isinstance(task, dict):
             raise ValueError("task must be an object")
         allowed = {"description", "acceptance", "dependencies", "priority", "execution"}
@@ -264,7 +264,7 @@ class TaskManager:
                         or not isinstance(value.get("criterion"), str) or not value["criterion"].strip()):
                     raise ValueError("verified criteria require criterion/verification objects; do not mix with prose")
                 verification = validate_acceptance_verification(
-                    value["verification"], allow_complete_read=allow_complete_read)
+                    value["verification"], allow_complete_read=ordinary_plan, allow_command_exit=ordinary_plan)
                 action = verification["action"]
                 prefixes = {"read_file": "read-ac-", "run_cmd": "command-ac-", "git_show": "git-ac-"}
                 if action not in prefixes:
@@ -284,7 +284,7 @@ class TaskManager:
                 criteria.append({"id": prefixes[action]
                                        + hashlib.sha256(identity.encode()).hexdigest()[:12],
                     "criterion": criterion, "action": action,
-                    **({"expect": verification["expect"]} if action == "read_file" else {}),
+                    **({"expect": verification["expect"]} if "expect" in verification else {}),
                     "args": json.dumps(verification["arguments"], ensure_ascii=False, allow_nan=False,
                                        sort_keys=True, separators=(",", ":"))})
             if len({value["id"] for value in criteria}) != len(criteria):
@@ -440,7 +440,7 @@ class TaskManager:
             transaction_event and transaction_event.get("event_type") == "interaction.plan_accepted"
             and transaction_event.get("expected_proposal")
         )
-        allow_complete_read = not (has_strategic_tasks or is_strategic_acceptance or strategic_bindings)
+        ordinary_plan = not (has_strategic_tasks or is_strategic_acceptance or strategic_bindings)
         references: dict[str, str] = {}
         completion_requests: list[str] = []
         used_strategic_bindings: set[str] = set()
@@ -490,7 +490,7 @@ class TaskManager:
                 raise ValueError("Strategic Plan tasks cannot be superseded without approval")
             if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
                 raise ValueError("task references must be unique nonempty strings")
-            fields = self._plan_task_fields(task_data, allow_complete_read=allow_complete_read)
+            fields = self._plan_task_fields(task_data, ordinary_plan=ordinary_plan)
             sources = [by_id[item] for item in source_ids]
             if any(item["status"] not in {"pending", "failed", "blocked"}
                    and not (allow_running and item["status"] == "running")
@@ -563,7 +563,8 @@ class TaskManager:
                 raise ValueError("each plan operation requires a supported op")
             kind = operation["op"]
             if set(operation) != allowed_by_op[kind] and not (
-                    kind == "add" and set(operation) == allowed_by_op[kind] | {"anchor"}):
+                    kind == "add" and set(operation) == allowed_by_op[kind] | {"anchor"}) and not (
+                    kind == "add_command_check" and set(operation) == allowed_by_op[kind] | {"expected_exit_code"}):
                 raise ValueError(f"{kind} operation has missing or unsupported fields")
             if kind == "add_read_check":
                 path = operation["path"]
@@ -575,11 +576,13 @@ class TaskManager:
                 }}
                 kind = "add"
             if kind in {"add_command_check", "bind_command_check"}:
-                if not allow_complete_read:
+                if not ordinary_plan:
                     raise ValueError("compact command checks are only for ordinary Working Plans")
                 verification = {"action": "run_cmd", "arguments": {"command": operation["command"]}}
                 if kind == "add_command_check":
                     description = operation["description"]
+                    if "expected_exit_code" in operation:
+                        verification["expect"] = {"exit_code": operation["expected_exit_code"]}
                     operation = {"op": "add", "ref": operation["ref"], "task": {
                         "description": description,
                         "acceptance": [{"criterion": description, "verification": verification}],
@@ -609,7 +612,7 @@ class TaskManager:
                     and last.get("success") is False and type(last.get("failed_command_exit_code")) is int
                     and last["failed_command_exit_code"] != 0
                 )
-                if not allow_complete_read or not (complete_read or failed_command):
+                if not ordinary_plan or not (complete_read or failed_command):
                     raise ValueError("command replacement requires an ordinary selected complete-read check "
                                      "with no evidence or a matching failed command receipt")
                 criterion = criteria[0]
@@ -625,10 +628,13 @@ class TaskManager:
                 if arguments.get("background"):
                     raise ValueError("background commands cannot be replaced as foreground checks")
                 verification = {"action": "run_cmd", "arguments": {**arguments, "command": command}}
+                if not complete_read and "expect" in criterion:
+                    verification["expect"] = criterion["expect"]
                 corrected = supersede([source_id], operation["ref"], {
                     "description": task["description"], "priority": task["priority"],
                     "acceptance": [{"criterion": criterion["criterion"], "verification": verification}],
-                    **({"execution": verification} if not complete_read and checkpoint.get("action") else {}),
+                    **({"execution": {"action": "run_cmd", "arguments": verification["arguments"]}}
+                       if not complete_read and checkpoint.get("action") else {}),
                 }, allow_running=True)
                 if not complete_read:
                     by_id[corrected]["checkpoint"]["replaced_command_receipts"] = [
@@ -645,7 +651,7 @@ class TaskManager:
                 ref = operation["ref"]
                 if not isinstance(ref, str) or not ref.strip() or ref in references or ref in by_id:
                     raise ValueError("task references must be unique nonempty strings")
-                fields = self._plan_task_fields(operation["task"], allow_complete_read=allow_complete_read)
+                fields = self._plan_task_fields(operation["task"], ordinary_plan=ordinary_plan)
                 if has_strategic_tasks and (not is_strategic_acceptance or not strategic_bindings or ref not in strategic_bindings):
                     raise ValueError("new work in a Strategic Plan requires an approved strategic binding")
                 task_id = f"task_{scope_key}_{uuid.uuid4().hex}"
@@ -728,7 +734,7 @@ class TaskManager:
                     "description": fields.get("description", current["description"]),
                     "acceptance": fields.get("acceptance", []),
                     **{key: fields[key] for key in ("dependencies", "priority", "execution") if key in fields},
-                }, allow_complete_read=allow_complete_read)
+                }, ordinary_plan=ordinary_plan)
                 normalized = {key: validated[key] for key in fields if key != "execution"}
                 if "execution" in fields:
                     checkpoint = current.get("checkpoint", {})
@@ -886,7 +892,7 @@ class TaskManager:
         for task in tasks:
             task["plan_id"] = plan_id
             checkpoint = task.get("checkpoint") or {}
-            if allow_complete_read and execution_validator is not None and checkpoint.get("declared_execution"):
+            if ordinary_plan and execution_validator is not None and checkpoint.get("declared_execution"):
                 previous = previous_checkpoints.get(task["id"], {})
                 if any(checkpoint.get(key) != previous.get(key) for key in ("declared_execution", "action", "args")):
                     execution_validator(checkpoint["action"], json.loads(checkpoint["args"]))
@@ -1251,7 +1257,8 @@ class TaskManager:
         persisted_targets = []
         for task in targets:
             candidate = deepcopy(task)
-            if success and verification_status in {"verified", "not_applicable"}:
+            if (success and verification_status in {"verified", "not_applicable"}
+                    or "failed_command_exit_code" in item):
                 verified_ids = []
                 for criterion in candidate.get("acceptance", []):
                     if (not isinstance(criterion, dict) or not criterion.get("id")
@@ -1259,19 +1266,20 @@ class TaskManager:
                         continue
                     if criterion.get("args") != normalized_args and criterion["id"] not in equivalent_read_ids:
                         continue
-                    if canonical == "run_cmd" and criterion["id"].startswith("command-ac-") and (
-                        verification_status != "verified"
-                        or inferred
-                        or candidate["status"] != "running"
-                        or not (candidate.get("checkpoint") or {}).get("native_execution_selected")
-                    ):
+                    expect = criterion.get("expect")
+                    if canonical == "run_cmd" and criterion["id"].startswith("command-ac-"):
+                        exit_matches = (success and verification_status == "verified" if expect is None else
+                                        expect == {"exit_code": item.get("failed_command_exit_code")})
+                        if (not exit_matches or inferred or candidate["status"] != "running"
+                                or not (candidate.get("checkpoint") or {}).get("native_execution_selected")):
+                            continue
+                    elif not success:
                         continue
                     if canonical == "git_show" and criterion["id"].startswith("git-ac-") and (
                         verification_status != "verified" or inferred or candidate["status"] != "running"
                         or not (candidate.get("checkpoint") or {}).get("native_execution_selected")
                     ):
                         continue
-                    expect = criterion.get("expect")
                     if canonical == "read_file":
                         if not isinstance(expect, dict) or len(expect) != 1:
                             continue
@@ -1286,6 +1294,8 @@ class TaskManager:
                                 continue
                     verified_ids.append(criterion["id"])
                 if verified_ids:
+                    # A failed process can satisfy an explicitly declared exit check.
+                    item["success"] = True
                     item["acceptance_ids"] = verified_ids
                     item.setdefault("acceptance", "verified strategic criterion")
             if ordered_inferred:

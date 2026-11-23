@@ -601,7 +601,7 @@ class AgentEngine:
                 reply_data = tool_result_to_dict(outcome)
                 if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
-                if selected_task_id and record.get("success"):
+                if selected_task_id and (record.get("success") or record.get("expected_exit_verified")):
                     current_plan = runtime.tasks.working_plan
                     if (current_plan and current_plan.id == record.get("plan_id")
                             and selected_task_id in current_plan.task_ids):
@@ -612,6 +612,11 @@ class AgentEngine:
                         }
                         if selected and selected["status"] == "succeeded" and record.get("task_id") == selected_task_id:
                             reply_data["working_plan_progress"] = {**progress, "task_status": "succeeded"}
+                            if record.get("expected_exit_verified"):
+                                reply_data["next_request"] = (
+                                    "The command produced the expected nonzero exit status. The task is verified. "
+                                    "Use the pinned Working Plan to start the next pending task if work remains."
+                                )
                         elif (call["action"] == "run_cmd" and (record.get("verification") or {}).get("status") == "verified"
                               and selected and selected["status"] == "running"
                               and not (selected.get("checkpoint") or {}).get("strategic_plan")

@@ -150,8 +150,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             add_command_guidance = (
                 "Use add_command_check with ref, description and command. "
                 "Run a failing reproduction command by itself first and keep its own exit status. "
-                "For a required reproduction, select its exact command check first, then replace the failed "
-                "check with the post-fix test using replace_command_check. "
+                "Set expected_exit_code to the expected nonzero status (for example 1). A match verifies the task. "
+                "Use a separate zero-exit check for the post-fix test. "
                 if can_add_command else ""
             )
             if not can_add_command:

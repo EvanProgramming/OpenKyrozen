@@ -1109,8 +1109,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
             and not (receipt.arguments or {}).get("background")):
         criteria = active_task["acceptance"]
         checkpoint = active_task.get("checkpoint") or {}
-        if (len(criteria) == 1 and isinstance(criterion := criteria[0], dict)
-                and criterion.get("action") == "run_cmd" and criterion.get("args") == matching_args
+        if (any(isinstance(criterion, dict) and criterion.get("action") == "run_cmd"
+                and criterion.get("args") == matching_args for criterion in criteria)
                 and checkpoint.get("native_execution_selected") and not checkpoint.get("strategic_plan")
                 and (not checkpoint.get("action") or (checkpoint["action"] == "run_cmd"
                     and checkpoint.get("args") == matching_args))):
@@ -1134,7 +1134,9 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
         if (task and not checkpoint.get("action") and not checkpoint.get("strategic_plan")
                 and "failed_command_exit_code" not in evidence):
             task_manager.update_checkpoint(task_id, {"action": receipt.action, "args": receipt_projection["args"]})
-    if task_id and reconcile_locally and receipt.success and effective_acceptance:
+    expected_exit_verified = (failed_command_exit_code is not None and bool(evidence.get("acceptance_ids"))
+                              and not evidence.get("unmatched_reason"))
+    if task_id and reconcile_locally and (receipt.success or expected_exit_verified) and effective_acceptance:
         task = next((item for item in task_manager.tasks if item["id"] == task_id), None)
         strategic = (task or {}).get("checkpoint", {}).get("strategic_plan", {})
         required = set(strategic.get("acceptance_ids", []))
@@ -1168,6 +1170,8 @@ def _record_turn_receipt(self, receipt: ExecutionReceipt, *, allow_legacy_task_m
     }
     if evidence.get("unmatched_reason"):
         result["unmatched_reason"] = evidence["unmatched_reason"]
+    if expected_exit_verified:
+        result["expected_exit_verified"] = True
     self._emit_stream_event({"event": "tool_receipt", "tool_receipt": result})
     self._emit_stream_event({"event": "tasks", "tasks": [
         {"id": item["id"], "description": item["description"], "status": item["status"]}

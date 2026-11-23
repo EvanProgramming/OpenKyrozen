@@ -485,6 +485,51 @@ class NativeContextTests(unittest.TestCase):
                     self.assertEqual([record["action"] for record in turn.tool_records],
                                      ["update_plan", "read_file", "update_plan"])
 
+    def test_native_expected_exit_verifies_task_without_changing_command_result(self):
+        import shlex
+
+        for exit_code in (0, 1, 7):
+            with self.subTest(exit_code=exit_code):
+                self.runtime.tasks.clear()
+                command = f"{shlex.quote(sys.executable)} -c 'raise SystemExit({exit_code})'"
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        tool = next(item for item in provider.tool_requests[-1] if item["name"] == "update_plan")
+                        self.assertIn("expected_exit_code", tool["description"])
+                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_command_check", "ref": "probe", "description": "Observe the failure",
+                             "command": command, "expected_exit_code": 1},
+                            {"op": "start", "task": "probe"},
+                        ]})
+                    elif step == 2:
+                        self.assertIsNotNone(self.runtime.tasks.execution_task_id)
+                        call = ToolCall("probe", "run_cmd", {"command": command})
+                    else:
+                        reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "probe")
+                        self.assertEqual(reply.is_error, exit_code != 0)
+                        self.assertEqual(reply.output["data"]["exit_code"], exit_code)
+                        if exit_code == 1:
+                            self.assertEqual(reply.output["working_plan_progress"]["task_status"], "succeeded")
+                        else:
+                            self.assertNotIn("working_plan_progress", reply.output)
+                        return ModelResponse(text="Probe finished.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Observe the failing probe."}],
+                                                  complexity="complex", permitted=self.runtime._permitted_tool_names())
+                if exit_code == 1:
+                    self.assertEqual(len(provider.requests), 3, answer)
+                record = turn.tool_records[-1]
+                self.assertEqual(record["success"], exit_code == 0)
+                self.assertEqual(record["verification"]["observed"]["exit_code"], exit_code)
+                self.assertEqual(bool(record["acceptance"]), exit_code == 1)
+                self.assertEqual(self.runtime.tasks.working_plan.status, "completed" if exit_code == 1 else "active")
+                self.assertEqual(self.runtime.tasks.working_plan.revision, 1)
+
     def test_native_failed_verification_can_be_replaced_by_a_compact_command_check(self):
         import shlex
 
