@@ -140,7 +140,11 @@ def _complete_turn(self, turn):
                 if run["status"] == "succeeded":
                     turn.tool_records.extend(run.get("parent_receipts", []))
             turn.tool_results_text += "\nDelegated results and independent verification:\n" + self._delegation_summary()
-            if all(run["status"] == "succeeded" for run in delegated):
+            seen = getattr(turn, "observed_delegation_versions", {})
+            already_answered = (getattr(turn, "native_tools", False) and not turn.protocol_error_message
+                                and len((turn.final_answer or "").strip()) >= 10
+                                and all(seen.get(run["run_id"]) == run["version"] for run in delegated))
+            if all(run["status"] == "succeeded" for run in delegated) and not already_answered:
                 # Retain accepted evidence if the synthesis provider fails or
                 # emits an interaction/tool control instead of the report.
                 sections = []

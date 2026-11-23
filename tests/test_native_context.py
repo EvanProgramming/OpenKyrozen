@@ -778,6 +778,49 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual([task["status"] for task in self.runtime.tasks.tasks],
                                  ["succeeded", "pending"] if has_pending else ["succeeded"])
 
+    def test_native_wait_keeps_oversized_review_actionable_without_repeating_synthesis(self):
+        runtime = self.runtime
+        coordinator = runtime.delegation()
+        summary = "The test expects count_items(None) to return 0. Verify with python -m unittest test_parser.py."
+        long_finding = "Detailed verified source evidence " * 550
+        run = {"run_id": "review-1", "version": 7, "name": "Researcher", "status": "succeeded",
+               "report": {"status": "completed", "summary": summary, "findings": [long_finding],
+                          "evidence": ["receipt_123"], "uncertainties": []},
+               "reviews": [{"verdict": "verified", "summary": "Read the original test."}]}
+        artifact_id = None
+
+        def respond(provider, messages, model):
+            nonlocal artifact_id
+            if len(provider.requests) == 1:
+                spec = next(item for item in provider.tool_requests[-1] if item["name"] == "wait_subagents")
+                self.assertEqual(spec["parameters"]["properties"]["timeout"]["maximum"], 120)
+                call = ToolCall("wait", "wait_subagents", {"run_ids": ["review-1"], "timeout": 120})
+                return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                    continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+            self.assertEqual(len(provider.requests), 2)
+            reply = next(item for item in messages if isinstance(item, ToolReply))
+            data = reply.output["data"]
+            self.assertLess(len(json.dumps(reply.output)), 3000)
+            agent, = data["agents"]
+            self.assertEqual((agent["run_id"], agent["version"], agent["status"]), ("review-1", 7, "succeeded"))
+            self.assertEqual(agent["report"]["summary"], summary)
+            self.assertEqual(agent["review"]["verdict"], "verified")
+            artifact_id = data["artifact_id"]
+            return ModelResponse(text="The independent review confirmed the test requirement.", finish_reason=FinishReason.FINAL)
+
+        provider = self.provider(respond)
+        with patch.object(coordinator, "list", return_value=[run]), patch.object(coordinator, "wait", return_value=[run]):
+            answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Collect the independent review."}],
+                                              permitted={"wait_subagents"})
+        self.assertEqual(len(provider.requests), 2)
+        self.assertEqual(turn.observed_delegation_versions, {"review-1": 7})
+        self.assertEqual(answer, "The independent review confirmed the test requirement.")
+        memory = runtime.memory_bank
+        page = memory.store.artifacts.read_page(artifact_id, 0, 1000, user_id=memory.user_id,
+                                                workspace_id=memory.workspace_id, session_id=memory.session_id)
+        self.assertGreater(page["total_chars"], 12000)
+        self.assertIn("Detailed verified source evidence", page["content"])
+
     def test_native_single_review_rejects_overlapping_assignments_before_dispatch(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         permitted = {"update_plan", "read_file", "spawn_agents", "wait_subagents"}

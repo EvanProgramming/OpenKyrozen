@@ -194,9 +194,36 @@ def list_subagents(self, args):
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
+def _wait_result_preview(agents):
+    """Keep the decision-ready fields inline when the full audit is archived."""
+    visible = agents[:8]
+    share = 5600 // max(1, len(visible))
+    compact = []
+    for agent in visible:
+        item = {key: agent[key] for key in ("run_id", "version", "name", "status") if key in agent}
+        if agent.get("error"):
+            item["error"] = agent["error"][:min(240, share // 5)]
+        report = agent.get("report")
+        if report:
+            item["report"] = {
+                "status": report.get("status"),
+                "summary": report.get("summary", "")[:min(1800, share // 2)],
+                "uncertainties": [str(note)[:min(180, share // 8)]
+                                  for note in report.get("uncertainties", [])[:2]],
+            }
+        if agent.get("reviews"):
+            review = agent["reviews"][-1]
+            item["review"] = {"verdict": review.get("verdict"),
+                              "summary": review.get("summary", "")[:min(350, share // 4)]}
+        compact.append(item)
+    return compact
+
+
 @legacy_text_api
 def wait_subagents(self, args):
-    """Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON."""
+    """Wait for delegated work and its reviews. When the result is needed before continuing, use timeout 120.
+    Use the returned agent statuses and report summaries. Open the full artifact only for additional evidence.
+    """
     value, error = _typed_json_args(args)
     if error:
         return error
@@ -323,11 +350,13 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
         if any((coordinator.root / path).resolve() == allowed or
                (coordinator.root / path).resolve().is_relative_to(allowed)
                for allowed in allowed_artifacts)]
-    task = ("Independently verify this assignment and submitted result. Read actual source evidence and every declared artifact with tools. "
-            "Independently read every declared artifact, including references outside the assignment's scope. "
+    task = ("Independently verify this assignment and submitted result. Read the relevant source and every "
+            "declared artifact, including references outside the assignment's scope that the runtime permits. "
             "Find incorrect claims, missing acceptance checks, and regressions. Do not trust an author's success claim. "
             "Check each asserted affected input against the source and language/library semantics; a plausible example is not a reproduced check. "
-            "If an exact behavior cannot be established, report the uncertainty rather than verify it.\n"
+            "If an exact behavior cannot be established, report the uncertainty rather than verify it. "
+            "Batch independent reads in one response. Use one workspace inventory if the acceptance needs it. "
+            "Conclude after checking every material claim.\n"
             + json.dumps({"assignment": brief, "submitted": run.get("report"),
                           "receipts": [{key: item for key, item in receipt.items() if key != "result"}
                               for receipt in run.get("result", {}).get("tool_records", [])]}, ensure_ascii=False)) if review else json.dumps(brief, ensure_ascii=False)
@@ -342,6 +371,10 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
     task = (
         f"You are the {role} sub-agent. {profile.system_prompt}\n\n"
         + task + "\n\n"
+        + ("For this read-only assignment, batch independent reads and use one inventory if needed. "
+           "Stop when the acceptance is checked. Include the substantive conclusion, exact references, "
+           "and any verification command in the concise summary. Cite each receipt once in evidence.\n\n"
+           if not review and not report_repair and "write" not in capabilities else "")
         + ("Return only a JSON review with verdict (verified|changes_requested|unverifiable), summary, findings, and evidence. "
            "A verified verdict requires independent tool inspection and evidence bound to actual receipts."
            if review else

@@ -1,5 +1,5 @@
 """State shared by the phases of a single turn."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class CancellationEvents:
@@ -39,6 +39,7 @@ class TurnContext:
     runtime_status: str = "completed"
     memory_packet: str = ""
     native_tools: bool = False
+    observed_delegation_versions: dict[str, int] = field(default_factory=dict)
 
     @property
     def planning_required(self) -> bool:

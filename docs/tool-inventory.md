@@ -67,7 +67,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `spawn_agents` | `read` | `internal` | false | Start independent specialist assignments in parallel. | `assignments`: array; required: `assignments` |
 | `stop_process` | `shell` | `process` | false | Stop a process owned by the current actor, workspace, and session. | `process_id`: string; required: `process_id` |
 | `update_plan` | `write` | `internal` | false | Edit a revision-checked Working Plan. To create one, omit plan_id, set | `complexity`: string, `expected_revision`: integer, `operations`: array, `plan_id`: string, `reason`: string, `tasks`: array; requires either `operations` and `expected_revision` or `complexity` and `tasks` |
-| `wait_subagents` | `read` | `internal` | false | Wait up to 60 seconds for delegated work and its mandatory reviews; args is JSON. | `run_ids`: array, `timeout`: number |
+| `wait_subagents` | `read` | `internal` | false | Wait for delegated work and its reviews. When the result is needed before continuing, use timeout 120. | `run_ids`: array, `timeout`: number |
 | `write_file` | `write` | `filesystem` | false | Write content to a file. Args format: "path\|content". | `content`: string, `path`: string; required: `path`, `content` |
 
 ## HTTP and MCP endpoints

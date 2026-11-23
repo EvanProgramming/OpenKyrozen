@@ -290,7 +290,7 @@ _OBJECT_FIELDS = {
                     },'required':['description','acceptance'],'additionalProperties':False}}},
     'spawn_agents': {'assignments': {'type': 'array', 'minItems': 1, 'items': _SPAWN_ASSIGNMENT}},
     'send_subagent': {'run_id': {'type':'string'}, 'assignment': {'type':'object','properties':{},'additionalProperties':True}},
-    'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':60}},
+    'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':120}},
     'cancel_subagent': {'run_id': {'type':'string'}},
     'check_stored_data': {'category': {'type':'string'}}, 'search_memory': {'query': {'type':'string','minLength':1}},
     'discover_tools': {'query': {'type':'string'}, 'names': {'type':'array','items':{'type':'string'}}},

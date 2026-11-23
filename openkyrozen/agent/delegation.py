@@ -733,7 +733,7 @@ class Delegation:
             return {**self._safe(self.runs[run_id]), "messages": messages, "review_messages": review_messages, "receipts": receipts}
 
     def wait(self, run_ids=None, timeout=30):
-        deadline = time.monotonic() + max(0, min(float(timeout), 60))
+        deadline = time.monotonic() + max(0, min(float(timeout), 120))
         with self.changed:
             selected = list(self.runs) if run_ids is None else run_ids
             if not isinstance(selected, list) or any(key not in self.runs for key in selected):

@@ -304,10 +304,22 @@ def _make_execution_receipt(self, *, action: str, args: Any, authorized: bool, s
                 archived_read_content = read_data["content"]
             summary = {"artifact_id": artifact_id, "total_chars": len(full_output),
                        "preview": f"{preview}{suffix}"}
+            projected_text = json.dumps(summary, ensure_ascii=False)
+            if (canonical == "wait_subagents" and call_id_source == "native" and authorized and tool_result.success
+                    and getattr(expected_spec, "source", None) == "builtin"):
+                from openkyrozen.agent.delegation_runtime import _wait_result_preview, wait_subagents
+
+                executor = expected_spec.executor
+                original = tool_result.data
+                agents = original.get("agents") if isinstance(original, dict) else None
+                if (getattr(executor, "__self__", None) is self
+                        and getattr(executor, "__func__", None) is wait_subagents.__tool_result_executor__
+                        and isinstance(agents, list)):
+                    projected_text = "The full delegation audit is retained in a tool artifact."
+                    summary.update(agents=_wait_result_preview(agents), agent_count=len(agents),
+                                   preview=projected_text)
             tool_result = ToolResult(
-                data=summary,
-                text=json.dumps(summary, ensure_ascii=False),
-                error=bounded_error,
+                data=summary, text=projected_text, error=bounded_error,
                 metadata={"artifact_id": artifact_id},
             )
             tool_error = bounded_error

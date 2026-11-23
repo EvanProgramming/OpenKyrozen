@@ -665,6 +665,13 @@ class AgentEngine:
                 from openkyrozen.agent.conversation import tool_result_to_dict
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
+                if (receipt.action == "wait_subagents" and receipt.success
+                        and getattr(receipt, "authorized", False) and getattr(receipt, "tool_source", None) == "builtin"):
+                    data = reply_data["data"]
+                    for run in data.get("agents", ()) if isinstance(data, dict) else ():
+                        if (run.get("status") == "succeeded" and isinstance(run.get("run_id"), str)
+                                and type(run.get("version")) is int and run.get("report")):
+                            turn.observed_delegation_versions[run["run_id"]] = run["version"]
                 if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
                 if selected_task_id and (record.get("success") or record.get("expected_exit_verified")):
