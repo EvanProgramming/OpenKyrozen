@@ -671,7 +671,8 @@ class Delegation:
             elif not inspected:
                 findings.append("Artifact was not independently read: " + reference)
             else:
-                with self.access.acquire(str(path), self.cancelled[run["run_id"]].is_set, reading=True):
+                run_id = run["run_id"]
+                with self.access.acquire(str(path), self.cancelled[run_id].is_set, owner=run_id, reading=True):
                     with path.open("rb") as source:
                         check["sha256"] = hashlib.file_digest(source, "sha256").hexdigest()
                 if isinstance(artifact, dict) and artifact.get("sha256") and artifact["sha256"] != check["sha256"]:

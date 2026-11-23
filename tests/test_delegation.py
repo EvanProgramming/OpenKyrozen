@@ -7,6 +7,7 @@ import threading
 import time
 import traceback
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,6 +114,22 @@ class DelegationTests(unittest.TestCase):
         )
         self.assertTrue(checks[0]['independently_read'])
         self.assertEqual(findings, [])
+
+    def test_reviewer_hashes_artifact_while_writer_owns_its_path(self):
+        artifact = self.root / "marker.txt"
+        run_id = "writing-run"
+        coordinator = self.manager(lambda *_: None)
+        coordinator.cancelled[run_id] = threading.Event()
+        digest = sha256(artifact.read_bytes()).hexdigest()
+        run = {"run_id": run_id, "report": {"artifacts": [{"path": artifact.name, "sha256": digest}]}}
+        review = {"tool_records": [{"action": "read_file", "args": {"path": artifact.name}, "success": True}]}
+
+        with coordinator.access.claim({str(artifact.resolve())}, run_id, lambda: False):
+            with patch.object(coordinator.access.condition, "wait", side_effect=AssertionError("own path blocked")):
+                findings, checks = coordinator._inspect_artifacts(run, review)
+
+        self.assertEqual(findings, [])
+        self.assertEqual(checks[0]["sha256"], digest)
 
     def fake_provider(self, config):
         runtime, calls, lock = self.runtime, self.calls, self.call_lock
