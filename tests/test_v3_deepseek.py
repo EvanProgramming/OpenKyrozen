@@ -206,6 +206,27 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertNotIn("strict", function)
         self.assertIn("minLength", schema["properties"]["path"])
 
+    def test_strict_chat_spawn_exposes_and_decodes_typed_assignments(self):
+        from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_tools
+        from openkyrozen.tools.catalog import builtin_metadata
+        from openkyrozen.tools.manifest import ToolRegistry
+
+        schema = builtin_metadata("spawn_agents")["input_schema"]
+        expected = {"objective": "Review source", "context": "One small file", "reason": "Independent review",
+                    "scope": ["module.py"], "dependencies": [], "acceptance": ["Inspect source"],
+                    "deliverables": ["Findings"]}
+        assignment = schema["properties"]["assignments"]["items"]
+        wire = strict_chat_tools([{"name": "spawn_agents", "description": "Delegate work",
+                                   "parameters": schema}])[0]["function"]["parameters"]
+        self.assertEqual(set(assignment["required"]), set(expected))
+        for field in expected:
+            self.assertIn(field, json.dumps(wire))
+        encoded = {**{name: {"omit": True} for name in assignment["properties"] if name not in expected}, **expected}
+        decoded = json.loads(decode_strict_chat_arguments(json.dumps({"assignments": [encoded]}), schema))
+        self.assertEqual(decoded, {"assignments": [expected]})
+        self.assertIsNone(ToolRegistry._argument_error(schema, decoded))
+        self.assertIsNotNone(ToolRegistry._argument_error(schema, {"assignments": []}))
+
     def test_complete_catalogue_fits_wire_and_typed_plan_maps_round_trip(self):
         from benchmarks.v3_deepseek import decode_strict_chat_arguments, strict_chat_body, strict_chat_schema, strict_chat_tools
         from openkyrozen.tools.catalog import _SCHEMAS

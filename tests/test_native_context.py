@@ -649,6 +649,92 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual([receipt["action"] for receipt in turn.tool_records], ["update_plan", "read_file"])
                 self.assertIn("The marker is ready.", answer)
 
+    def test_native_delegation_retries_one_no_effect_assignment_rejection(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        permitted = {"update_plan", "read_file", "read_tool_artifact", "spawn_agents", "wait_subagents"}
+        user_input = "Read the note. Delegate the independent review."
+        valid = {"objective": "Review the note", "context": "Use the named source",
+                 "reason": "Independent review is requested", "dependencies": [], "scope": ["notes.txt"],
+                 "acceptance": ["Read the note"], "deliverables": ["Findings"]}
+        missing_field = {key: value for key, value in valid.items() if key != "dependencies"}
+        for assignment, reason in ((missing_field, "dependencies"),
+                                   ({**valid, "scope": ["../outside.txt"]}, "outside the workspace")):
+            with self.subTest(reason=reason):
+                self.runtime.tasks.clear()
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    _, availability = self.availability(messages)
+                    current = set(availability["current_call_tools"])
+                    if step == 1:
+                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
+                            {"op": "start", "task": "inspect"},
+                        ]})
+                    elif step in (2, 3):
+                        self.assertEqual(current, {"spawn_agents"})
+                        if step == 3:
+                            first = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "spawn-2")
+                            self.assertTrue(first.is_error)
+                            self.assertEqual(first.output["error"]["code"], "invalid_arguments")
+                            self.assertIn(reason, first.output["error"]["message"])
+                        call = ToolCall(f"spawn-{step}", "spawn_agents", {"assignments": [assignment]})
+                    elif step == 4:
+                        self.assertIn("read_file", current)
+                        call = ToolCall("read", "read_file", {"path": "notes.txt"})
+                    else:
+                        return ModelResponse(text="The note is ready.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(
+                    provider, [{"role": "user", "content": user_input}], complexity="complex", permitted=permitted,
+                    user_input=user_input,
+                )
+                self.assertEqual(len(provider.requests), 5, answer)
+                self.assertEqual([record["success"] for record in turn.tool_records], [True, False, False, True])
+                self.assertIn("The note is ready.", answer)
+                coordinator = self.runtime.subagent_manager.coordinator
+                self.assertFalse(coordinator and coordinator.list())
+
+    def test_native_spawn_after_direct_receipt_requires_the_same_active_plan(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        permitted = {"update_plan", "read_file", "read_tool_artifact", "spawn_agents"}
+        assignment = {"objective": "Review the note", "context": "Use the named source",
+                      "reason": "Independent coverage", "scope": ["notes.txt"], "dependencies": [],
+                      "acceptance": ["Read the note"], "deliverables": ["Findings"]}
+        for has_pending in (True, False):
+            with self.subTest(has_pending=has_pending):
+                self.runtime.tasks.clear()
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    if step == 1:
+                        operations = [{"op": "add_read_check", "ref": "inspect", "path": "notes.txt"}]
+                        if has_pending:
+                            operations.append({"op": "add_read_check", "ref": "other", "path": "other.txt"})
+                        operations.append({"op": "start", "task": "inspect"})
+                        calls = (ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": operations}),)
+                    elif step == 2:
+                        calls = (ToolCall("read", "read_file", {"path": "notes.txt"}),
+                                 ToolCall("spawn", "spawn_agents", {"assignments": [assignment]}))
+                    else:
+                        reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "spawn")
+                        self.assertEqual(reply.is_error, not has_pending)
+                        return ModelResponse(text="The note is ready.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"calls": len(calls)}))
+
+                provider = self.provider(respond)
+                with patch("openkyrozen.agent.delegation.Delegation.spawn", return_value=[]) as dispatch:
+                    _, turn, _ = self.run_native(provider, [{"role": "user", "content": "Review the note."}],
+                                                 complexity="complex", permitted=permitted)
+                self.assertEqual(dispatch.call_count, int(has_pending))
+                receipt = next(record for record in turn.tool_records if record["action"] == "spawn_agents")
+                self.assertEqual(receipt["success"], has_pending)
+                self.assertIsNone(receipt["task_id"])
+
     def test_native_delegation_guidance_tracks_the_working_plan_gate_and_permission(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for delegation_allowed in (True, False):

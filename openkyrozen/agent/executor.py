@@ -823,9 +823,19 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             call_id=call_id, task_id=task_id,
         )
 
+    plan_delegation = (call_id_source == "native" and task_plan_id is not None
+                       and canonical in {"spawn_agents", "wait_subagents"}
+                       and expected_spec is not None and expected_spec.source == "builtin")
+    if plan_delegation:
+        task_id = None
+
     def local_binding_valid():
-        return (getattr(getattr(self.tasks, "working_plan", None), "id", None) == task_plan_id
-                and self.tasks.execution_task_id == task_id)
+        plan = self.tasks.working_plan
+        if plan is None or plan.id != task_plan_id:
+            return False
+        if plan_delegation:
+            return plan.status == "active" or (canonical == "wait_subagents" and plan.status == "completed")
+        return self.tasks.execution_task_id == task_id
 
     if task_plan_id is not None and not local_binding_valid():
         emit_rejected_call()

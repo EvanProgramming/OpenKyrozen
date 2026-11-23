@@ -300,7 +300,8 @@ class AgentEngine:
         final_answer_requested = False
         wire_recovery_used = False
         delegation_requested = turn.planning_required and _requests_delegation(turn.user_input)
-        delegation_offered = False
+        delegation_attempts = 0
+        retry_delegation = False
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
@@ -356,7 +357,8 @@ class AgentEngine:
                 tool_names |= runtime._permitted_tool_names() & {"update_plan"}
                 if "request_question" in runtime._permitted_tool_names():
                     tool_names.add("request_question")
-            delegation_first = (delegation_requested and not delegation_offered and step < max_steps
+            delegation_first = (delegation_requested and (delegation_attempts == 0 or retry_delegation)
+                                and step < max_steps
                                 and native_tool_phase == "plan_active" and "spawn_agents" in tool_names
                                 and runtime.tasks.execution_task_id is not None)
             if delegation_first:
@@ -364,8 +366,9 @@ class AgentEngine:
                 delegation_first = not any(interaction.get(key) for key in
                                            ("executing_plan", "pending_plan", "pending_question"))
             if delegation_first:
-                delegation_offered = True
-                tool_names &= {"spawn_agents", "request_question"}
+                delegation_attempts += 1
+                retry_delegation = False
+                tool_names = tool_names & {"spawn_agents", "request_question"}
 
             previous_replies = [messages[index] for index in previous_reply_indexes]
             _refresh_working_plan_context(runtime, messages)
@@ -706,6 +709,13 @@ class AgentEngine:
                 context.native_plan_active = False
                 context.native_plan_completed = False
                 context.native_completed_predecessor = None
+            if (delegation_first and delegation_attempts == 1 and len(calls) == 1
+                    and calls[0]["action"] == "spawn_agents"):
+                record = turn.tool_records[-1]
+                error = record.get("tool_error") or {}
+                retry_delegation = (record.get("failure") == "invalid_arguments" and
+                    (record.get("authorized") is False
+                     or (error.get("metadata") or {}).get("delegation_validation_no_effect") is True))
             if turn.pending_interaction_reply:
                 final_text = turn.pending_interaction_reply
                 break

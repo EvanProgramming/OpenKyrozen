@@ -252,6 +252,26 @@ _PLAN_OPERATION_SCHEMAS = [
         'required':['op','task'],'additionalProperties':False} for op in ('start','suggest_complete')],
 ]
 
+_ASSIGNMENT_TEXT = {"type": "string", "minLength": 1}
+_ASSIGNMENT_LIST = {"type": "array", "items": _ASSIGNMENT_TEXT}
+_SPAWN_ASSIGNMENT = {
+    "type": "object",
+    "properties": {
+        "objective": _ASSIGNMENT_TEXT,
+        "context": _ASSIGNMENT_TEXT,
+        "reason": _ASSIGNMENT_TEXT,
+        "scope": {**_ASSIGNMENT_LIST, "description": "Exact workspace paths when known. Use . only for whole-workspace work."},
+        "dependencies": {**_ASSIGNMENT_LIST, "description": "Use [] for an independent assignment."},
+        "acceptance": {**_ASSIGNMENT_LIST, "minItems": 1},
+        "deliverables": {**_ASSIGNMENT_LIST, "minItems": 1},
+        "profile": {**_ASSIGNMENT_TEXT, "description": "Use researcher for read-only review or coder for scoped edits."},
+        "risk": {"type": "string", "enum": ["low", "normal", "high"]},
+        **{field: _ASSIGNMENT_TEXT for field in ("id", "task_id", "provider", "model", "custom_profile")},
+    },
+    "required": ["objective", "context", "reason", "scope", "dependencies", "acceptance", "deliverables"],
+    "additionalProperties": False,
+}
+
 _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
                     'plan_id': {'type':'string','minLength':1,'description':'Runtime-returned existing plan ID. Omit when creating a new plan.'},
@@ -268,7 +288,7 @@ _OBJECT_FIELDS = {
                             'arguments': {'type':'object','properties':{},'additionalProperties':True},
                         },'required':['action','arguments'],'additionalProperties':False},
                     },'required':['description','acceptance'],'additionalProperties':False}}},
-    'spawn_agents': {'assignments': {'type':'array','items':{'type':'object','properties':{},'additionalProperties':True}}},
+    'spawn_agents': {'assignments': {'type': 'array', 'minItems': 1, 'items': _SPAWN_ASSIGNMENT}},
     'send_subagent': {'run_id': {'type':'string'}, 'assignment': {'type':'object','properties':{},'additionalProperties':True}},
     'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':60}},
     'cancel_subagent': {'run_id': {'type':'string'}},
@@ -321,7 +341,7 @@ for _name, _properties in _OBJECT_FIELDS.items():
         'read_webpage': ['url'], 'git_clone': ['url'], 'analyze_remote_repo': ['url'],
         'browser_open': ['url'], 'browser_snapshot': ['session_id'],
         'browser_click': ['session_id', 'selector'], 'browser_type': ['session_id', 'selector', 'text'],
-        'browser_close': ['session_id'], 'send_subagent': ['run_id', 'assignment'],
+        'browser_close': ['session_id'], 'spawn_agents': ['assignments'], 'send_subagent': ['run_id', 'assignment'],
         'cancel_subagent': ['run_id'], 'search_memory': ['query'], 'calculate': ['expression'],
         'edit_file': ['path', 'old_text', 'new_text', 'expected_sha256'],
         'apply_patch': ['path', 'expected_sha256', 'hunks'],

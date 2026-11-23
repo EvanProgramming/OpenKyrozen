@@ -172,6 +172,10 @@ class WorkspaceAccess:
                 self.condition.notify_all()
 
 
+class DelegationRequestError(ValueError):
+    """Known assignment rejection before any agent starts."""
+
+
 class DelegationBudget:
     """Reserve a bounded share of one parent turn for child and review work."""
 
@@ -194,7 +198,7 @@ class DelegationBudget:
         amount = self.CHILD_RESERVATION + (self.REVIEW_RESERVATION if review else 0)
         with self._lock:
             if run_id in self._commitments or amount > self.TURN_LIMIT - sum(self._commitments.values()):
-                raise ValueError("Delegation budget is unavailable for this assignment")
+                raise DelegationRequestError("Delegation budget is unavailable for this batch. Use fewer assignments.")
             self._commitments[run_id] = amount
 
     def settle(self, run_id: str, *, cost_picos: int | None) -> None:
@@ -333,30 +337,30 @@ class Delegation:
 
     def _brief(self, brief):
         if not isinstance(brief, dict):
-            raise ValueError("Assignment must be an object")
+            raise DelegationRequestError("Assignment must be an object")
         for key in ("objective", "context", "reason"):
             if not isinstance(brief.get(key), str) or not brief[key].strip():
-                raise ValueError("Assignment requires " + key)
+                raise DelegationRequestError("Assignment requires " + key)
         for key in ("scope", "dependencies", "acceptance", "deliverables"):
             if not isinstance(brief.get(key), list) or any(not isinstance(x, str) or not x.strip() for x in brief[key]):
-                raise ValueError("Assignment requires a string array: " + key)
+                raise DelegationRequestError("Assignment requires a string array: " + key)
         if not brief["acceptance"] or not brief["deliverables"]:
-            raise ValueError("Acceptance and deliverables cannot be empty")
+            raise DelegationRequestError("Acceptance and deliverables cannot be empty")
         if brief.get("profile", "researcher") not in self.profiles:
-            raise ValueError("Unknown sub-agent profile")
+            raise DelegationRequestError("Unknown sub-agent profile")
         if brief.get("risk", "normal") not in {"low", "normal", "high"}:
-            raise ValueError("risk must be low, normal, or high")
+            raise DelegationRequestError("risk must be low, normal, or high")
         for key in ("provider", "model", "custom_profile", "id"):
             if key in brief and (not isinstance(brief[key], str) or not brief[key].strip()):
-                raise ValueError(key + " must be nonempty text")
+                raise DelegationRequestError(key + " must be nonempty text")
         if "task_id" in brief and (not isinstance(brief["task_id"], str) or not brief["task_id"].strip()):
-            raise ValueError("task_id must be nonempty text")
+            raise DelegationRequestError("task_id must be nonempty text")
         brief = copy.deepcopy(brief)
         paths = []
         for path in brief["scope"]:
             resolved = (self.root / path).resolve()
             if not resolved.is_relative_to(self.root):
-                raise ValueError("Assignment scope is outside the workspace")
+                raise DelegationRequestError("Assignment scope is outside the workspace")
             paths.append(str(resolved.relative_to(self.root)))
         brief["scope"] = list(dict.fromkeys(paths))
         return brief
@@ -370,35 +374,35 @@ class Delegation:
 
     def spawn(self, assignments, *, budget=None):
         if not isinstance(assignments, list) or not assignments:
-            raise ValueError("assignments must be a nonempty array")
+            raise DelegationRequestError("assignments must be a nonempty array")
         budget = budget or DelegationBudget()
         briefs = [self._brief(item) for item in assignments]
         with self.lock:
             ids = [b.get("id", uuid.uuid4().hex) for b in briefs]
             if len(set(ids)) != len(ids):
-                raise ValueError("Duplicate assignment IDs")
+                raise DelegationRequestError("Duplicate assignment IDs")
             mapping = {key: "subagent_" + uuid.uuid4().hex for key in ids}
             known = set(self.runs) | set(mapping)
             signatures = set()
             active_keys = {assignment_key(run["assignment"]) for run in self.runs.values() if run["status"] not in TERMINAL}
             for key, brief in zip(ids, briefs):
                 if key in self.runs or any(key == r.get("assignment_id") for r in self.runs.values()):
-                    raise ValueError("Assignment ID already exists")
+                    raise DelegationRequestError("Assignment ID already exists")
                 if any(dep not in known for dep in brief["dependencies"]):
-                    raise ValueError("Unknown dependency")
+                    raise DelegationRequestError("Unknown dependency")
                 signature = json.dumps([brief["objective"].strip().lower(), sorted(brief["scope"]), brief["context"]])
                 if assignment_key(brief) in active_keys:
-                    raise ValueError("Duplicate active assignment")
+                    raise DelegationRequestError("Duplicate active assignment")
                 active_keys.add(assignment_key(brief))
                 if signature in signatures or any(r["signature"] == signature and r["status"] not in {"failed", "blocked", "cancelled", "interrupted"} for r in self.runs.values()):
-                    raise ValueError("Duplicate exploration requires new evidence and a distinct objective")
+                    raise DelegationRequestError("Duplicate exploration requires new evidence and a distinct objective")
                 signatures.add(signature)
             edges = {key: set(b["dependencies"]) & set(mapping) for key, b in zip(ids, briefs)}
             pending = set(edges)
             while pending:
                 ready = {key for key in pending if not edges[key] & pending}
                 if not ready:
-                    raise ValueError("Cyclic dependencies")
+                    raise DelegationRequestError("Cyclic dependencies")
                 pending -= ready
             reserved = []
             try:

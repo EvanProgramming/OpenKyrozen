@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from contextvars import copy_context
 from dataclasses import replace
 
-from openkyrozen.agent.delegation import Delegation, TERMINAL, TOOLS, WorkspaceAccess
+from openkyrozen.agent.delegation import Delegation, DelegationRequestError, TERMINAL, TOOLS, WorkspaceAccess
 from openkyrozen.agent.models import WorkspaceState
 from openkyrozen.agent.turn import ExecutionContext
 from openkyrozen.agent.compaction import ContextState
@@ -145,12 +145,19 @@ def spawn_agents(self, args):
     if error:
         return error
     assignments = value.get("assignments")
+    no_effect = {"delegation_validation_no_effect": True}
     if isinstance(assignments, list):
         for assignment in assignments:
             task_id = assignment.get("task_id") if isinstance(assignment, dict) else None
             if task_id is not None and not self._valid_receipt_task_binding(self.current_session, task_id):
-                return tool_failure("invalid_arguments", "Error: assignment task_id must identify a pending task in the active Working Plan.")
-    data = {"agents": self.delegation().spawn(assignments, budget=self.execution_context.delegation_budget)}
+                return tool_failure("invalid_arguments",
+                    "Error: assignment task_id must identify a pending task in the active Working Plan.",
+                    retriable=True, metadata=no_effect)
+    try:
+        data = {"agents": self.delegation().spawn(assignments, budget=self.execution_context.delegation_budget)}
+    except DelegationRequestError as exc:
+        return tool_failure("invalid_arguments", f"Error: invalid delegation assignment: {exc}",
+                            retriable=True, metadata=no_effect)
     return tool_json_result(data, text=json.dumps(data, ensure_ascii=False))
 
 
