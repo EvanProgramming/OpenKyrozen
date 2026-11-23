@@ -31,9 +31,10 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         wire = strict_chat_tools([tool])[0]["function"]["parameters"]
         items = wire["properties"]["operations"]["anyOf"][0]["items"]
         variants = wire["$def"][items["$ref"].rsplit("/", 1)[-1]]["anyOf"]
-        shorthand, = [row for row in variants if row["properties"]["op"]["enum"] == ["add_command_check"]]
-        self.assertEqual(set(shorthand["required"]), {"op", "ref", "description", "command"})
-        self.assertFalse(shorthand["additionalProperties"])
+        fields = {"op", "ref", "description", "command"}
+        shorthands = [row for row in variants if row["properties"]["op"]["enum"] == ["add_command_check"]]
+        self.assertEqual([set(row["required"]) for row in shorthands], [fields, fields | {"expected_exit_code"}])
+        self.assertTrue(all(not row["additionalProperties"] for row in shorthands))
 
         command = "python3 -m unittest test_api.ApiTests.test_duplicate_name"
         arguments = {"plan_id": "plan-1", "expected_revision": 4, "operations": [
@@ -47,6 +48,13 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertEqual(json.loads(decode_strict_chat_arguments(raw, schema)), arguments)
         self.assertEqual(json.loads(decode_strict_chat_arguments(raw, strategic_schema, tool_name="update_plan")),
                          arguments)
+        failure_check = {**arguments, "operations": [
+            {**arguments["operations"][0], "expected_exit_code": 1}, arguments["operations"][1],
+        ]}
+        decoded_failure = json.loads(decode_strict_chat_arguments(
+            json.dumps(failure_check), schema, tool_name="update_plan"))
+        self.assertIsNone(ToolRegistry._argument_error(schema, decoded_failure))
+        self.assertEqual(decoded_failure, failure_check)
         strategic_tool = strict_chat_tools([{**tool, "parameters": strategic_schema}])[0]
         self.assertNotIn("add_command_check", json.dumps(strategic_tool))
         hidden = deepcopy(schema)
@@ -62,7 +70,8 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertEqual(rejected, arguments)
         self.assertIsNotNone(ToolRegistry._argument_error(hidden, rejected))
 
-        for invalid in ({"anchor": "approved-task"}, {"command": False}):
+        for invalid in ({"anchor": "approved-task"}, {"command": False},
+                        {"expected_exit_code": 0}, {"expected_exit_code": True}, {"expected_exit_code": 256}):
             with self.subTest(invalid=invalid):
                 bad = {**arguments, "operations": [{**arguments["operations"][0], **invalid}]}
                 rejected = json.loads(decode_strict_chat_arguments(json.dumps(bad), schema, tool_name="update_plan"))
