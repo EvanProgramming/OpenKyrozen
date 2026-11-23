@@ -133,7 +133,12 @@ def _typed_json_args(args):
 
 @legacy_text_api
 def spawn_agents(self, args):
-    """Automatically start parallel specialist assignments; args is a JSON assignment batch."""
+    """Start independent specialist assignments in parallel. Each assignment needs
+    objective, context, reason, scope (exact paths), dependencies (use [] if none),
+    acceptance and deliverables (nonempty lists). Use profile researcher for read-only
+    review or coder for disjoint edits. Start independent work while the plan is active
+    and use wait_subagents with the returned run IDs to collect the verified results.
+    """
     if self.execution_context.child_run_id:
         raise ValueError("Only the main agent can delegate")
     value, error = _typed_json_args(args)

@@ -287,6 +287,45 @@ class AgentEngineTests(unittest.TestCase):
         permitted.remove("read_tool_artifact")
         self.assertNotIn("read_tool_artifact", engine._native_tool_names())
 
+    def test_compact_native_keeps_permitted_delegation_tools_without_discovery(self):
+        permitted = {"discover_tools", "read_file", "spawn_agents", "wait_subagents"}
+        runtime = SimpleNamespace(
+            execution_context=SimpleNamespace(discovered_tools=frozenset()),
+            _permitted_tool_names=lambda: permitted.copy(),
+        )
+        engine = AgentEngine(runtime)
+        self.assertEqual(engine._native_tool_names(), permitted)
+        permitted.difference_update({"spawn_agents", "wait_subagents"})
+        self.assertEqual(engine._native_tool_names(), permitted)
+
+    def test_native_can_wait_for_delegation_after_its_working_plan_completes(self):
+        runtime = self.complex_native_runtime()
+        runtime.execution_context.max_steps = 4
+        runtime.tasks.working_plan = SimpleNamespace(id="plan-1", status="active")
+        runtime._permitted_tool_names = lambda: {
+            "read_file", "discover_tools", "update_plan", "spawn_agents", "wait_subagents",
+        }
+        runtime._get_model_response.side_effect = [
+            ModelResponse(tool_calls=(ToolCall("start", "spawn_agents", {"assignments": []}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(tool_calls=(ToolCall("read", "read_file", {"path": "note.txt"}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(tool_calls=(ToolCall("wait", "wait_subagents", {"run_ids": ["review"]}),),
+                          finish_reason=FinishReason.TOOL_REQUEST),
+            ModelResponse(text="Done", finish_reason=FinishReason.FINAL),
+        ]
+
+        def execute(calls, **kwargs):
+            if calls[0]["action"] == "read_file":
+                runtime.tasks.working_plan.status = "completed"
+
+        runtime._execute_tool_batch.side_effect = execute
+        self.assertEqual(AgentEngine(runtime).run(TurnContext("Read the note and delegate independent review")), "Done")
+        names = [call.kwargs["tool_names"] for call in runtime._get_model_response.call_args_list]
+        self.assertIn("spawn_agents", names[0])
+        self.assertEqual(names[2], {"update_plan", "wait_subagents"})
+        self.assertEqual(runtime._execute_tool_batch.call_count, 3)
+
     def test_compact_native_falls_back_to_permitted_inventory_without_discovery_access(self):
         runtime = SimpleNamespace(
             execution_context=SimpleNamespace(discovered_tools=frozenset()),

@@ -9,7 +9,7 @@ from openkyrozen.providers.models import FinishReason, ProviderContractError, Te
 _COMPACT_CORE_TOOLS = frozenset({
     "list_dir", "find_files", "search_files", "read_file", "write_file", "edit_file", "apply_patch",
     "run_cmd", "discover_tools", "read_tool_artifact", "update_plan",
-    "propose_plan", "request_question",
+    "propose_plan", "request_question", "spawn_agents", "wait_subagents",
 })
 _NATIVE_CONTROLS = frozenset({"propose_plan", "request_question"})
 
@@ -327,6 +327,8 @@ class AgentEngine:
             elif needs_plan:
                 completed_tools = {"update_plan", "read_tool_artifact"}
                 if completed_plan:
+                    if "spawn_agents" in history_tool_names:
+                        completed_tools.add("wait_subagents")
                     accepted = (runtime._interaction_controller.state().get("executing_plan")
                                 if "propose_plan" in tool_names else None)
                     if accepted and accepted.get("working_plan_id") == plan.id:
