@@ -230,6 +230,8 @@ def _complete_turn(self, turn):
     unresolved_effect_failure = False
     unresolved_effect_blocked = False
     for index, record in enumerate(turn.tool_records):
+        if record.get("expected_exit_verified") is True:
+            continue
         verification = record.get("verification") or {}
         later_records = turn.tool_records[index + 1:]
         if _replaced_artifact_lookup(getattr(self.tasks, "working_plan", None), record, later_records):

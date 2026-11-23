@@ -523,10 +523,14 @@ class NativeContextTests(unittest.TestCase):
                                                   complexity="complex", permitted=self.runtime._permitted_tool_names())
                 if exit_code == 1:
                     self.assertEqual(len(provider.requests), 3, answer)
+                    self.assertNotIn("Tool status: incomplete", answer)
+                    self.assertEqual(turn.runtime_status, "completed")
                 record = turn.tool_records[-1]
                 self.assertEqual(record["success"], exit_code == 0)
                 self.assertEqual(record["verification"]["observed"]["exit_code"], exit_code)
                 self.assertEqual(bool(record["acceptance"]), exit_code == 1)
+                if exit_code == 1:
+                    self.assertIn("Observed expected exit status", self.runtime._deterministic_tool_summary([record]))
                 self.assertEqual(self.runtime.tasks.working_plan.status, "completed" if exit_code == 1 else "active")
                 self.assertEqual(self.runtime.tasks.working_plan.revision, 1)
 

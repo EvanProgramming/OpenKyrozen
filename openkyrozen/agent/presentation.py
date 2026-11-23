@@ -40,7 +40,10 @@ def _deterministic_tool_summary(self, tool_records: list[dict[str, Any]]) -> str
     lines: list[str] = []
     for record in tool_records:
         verified_failure = (record.get("verification") or {}).get("status") == "failed"
-        status = "Completed" if record.get("success") and not verified_failure else "Could not complete"
+        if record.get("expected_exit_verified") is True:
+            status = "Observed expected exit status"
+        else:
+            status = "Completed" if record.get("success") and not verified_failure else "Could not complete"
         result = self._clean_final_response(str(record.get("result") or "")).replace("\n", " ")
         if len(result) > 300:
             result = result[:297] + "..."
