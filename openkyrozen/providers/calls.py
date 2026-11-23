@@ -325,14 +325,19 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     "Call spawn_agents for user-requested independent work before doing it yourself. "
                     "Use the Working Plan for your own tasks and collect the delegated results before answering. "
                 )
+                if current_names <= {"spawn_agents", "request_question"}:
+                    phase_guidance += (
+                        "This request is for the independent assignments. If you need workspace inspection "
+                        "to determine their scopes, state that briefly and continue on the next request. "
+                    )
             elif ((_native_tool_phase == "plan_required" or ordinary_followup)
                     and "spawn_agents" in self._permitted_tool_names()
                     and registry.get_spec("spawn_agents").capability in allowed):
                 if _native_tool_phase == "plan_required":
                     phase_guidance += (
                         "Delegation becomes available after you start a Working Plan task. "
-                        "If the user asks for delegation, plan your direct work and then use spawn_agents "
-                        "for the independent assignments. "
+                        "If the user asks for delegation, keep the direct plan short and use spawn_agents "
+                        "for the independent assignments. Use scoped reading tools for discovery during work. "
                     )
                 else:
                     phase_guidance += (

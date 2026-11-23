@@ -194,7 +194,8 @@ class NativeContextTests(unittest.TestCase):
                 + [{"role": "user" if index % 2 == 0 else "assistant", "content": f"recent-{index}: keep cedar decision"}
                    for index in range(4)])
 
-    def run_native(self, provider, messages, *, window=None, complexity="simple", permitted=None):
+    def run_native(self, provider, messages, *, window=None, complexity="simple", permitted=None,
+                   user_input="Continue the current work"):
         runtime = self.runtime
         context = copy.copy(runtime.execution_context)
         context.provider, context.model = provider, "context-fixture"
@@ -208,7 +209,7 @@ class NativeContextTests(unittest.TestCase):
         def prepare(turn):
             turn.interaction_mode, turn.complexity = "agent", complexity
             turn.turn_start, turn.learning_run, turn.learned_context = time.time(), {"run_id": "context-fixture"}, ""
-        turn = TurnContext("Continue the current work")
+        turn = TurnContext(user_input)
         with patch.object(runtime, "_permitted_tool_names", return_value=permitted or {"read_file", "write_file"}), \
                 patch.object(runtime, "_prepare_turn", side_effect=prepare), \
                 patch.object(runtime, "_build_messages", return_value=messages), \
@@ -599,6 +600,54 @@ class NativeContextTests(unittest.TestCase):
         self.assertFalse(turn.tool_records[1]["success"])
         self.assertEqual(len(provider.requests), 5)
         self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
+
+    def test_native_explicit_delegation_gets_one_focused_opportunity_before_direct_work(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        cases = (
+            ("Check the note. Delegate the independent review if available.", True, True),
+            ("Check the note. Use parallel review if available.", True, True),
+            ("Check the note. Do not delegate.", True, False),
+            ("Explain this prompt example:\n```\nDelegate the review.\n```", True, False),
+            ("Delegate the independent review.", False, False),
+        )
+        for user_input, permitted_to_delegate, focused in cases:
+            with self.subTest(user_input=user_input, permitted_to_delegate=permitted_to_delegate):
+                self.runtime.tasks.clear()
+                permitted = {"update_plan", "read_file", "read_tool_artifact", "discover_tools"}
+                if permitted_to_delegate:
+                    permitted |= {"spawn_agents", "wait_subagents"}
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    _, availability = self.availability(messages)
+                    current = set(availability["current_call_tools"])
+                    if step == 1:
+                        self.assertEqual(current, {"update_plan", "read_tool_artifact"})
+                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
+                            {"op": "start", "task": "inspect"},
+                        ]})
+                    elif step == 2 and focused:
+                        self.assertEqual(current, {"spawn_agents"})
+                        # The model needs the path before it can offer a scoped assignment.
+                        return ModelResponse(text="I need to inspect the scope first.", finish_reason=FinishReason.FINAL)
+                    elif step == (3 if focused else 2):
+                        self.assertIn("read_file", current)
+                        self.assertEqual("spawn_agents" in current, permitted_to_delegate)
+                        call = ToolCall("read", "read_file", {"path": "notes.txt"})
+                    else:
+                        return ModelResponse(text="The marker is ready.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                provider = self.provider(respond)
+                answer, turn, _ = self.run_native(
+                    provider, [{"role": "user", "content": user_input}], complexity="complex", permitted=permitted,
+                    user_input=user_input,
+                )
+                self.assertEqual(len(provider.requests), 4 if focused else 3, answer)
+                self.assertEqual([receipt["action"] for receipt in turn.tool_records], ["update_plan", "read_file"])
+                self.assertIn("The marker is ready.", answer)
 
     def test_native_delegation_guidance_tracks_the_working_plan_gate_and_permission(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from openkyrozen.agent.turn import TurnContext
 from openkyrozen.providers.models import FinishReason, ProviderContractError, TextDelta, ToolCallDelta, ToolReply
@@ -13,10 +14,20 @@ _COMPACT_CORE_TOOLS = frozenset({
 })
 _NATIVE_CONTROLS = frozenset({"propose_plan", "request_question"})
 
+_DELEGATION_REQUEST = re.compile(
+    r"(?:^|[.!?]\s+|\n\s*(?:[-*]\s+)?)\s*(?:please\s+)?"
+    r"(?:delegate\s+|use\s+(?:an?\s+)?(?:parallel\s+reviews?|sub[- ]?agents?)\b)",
+    re.IGNORECASE,
+)
+
 
 _FOLLOWUP_WRITE_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 _INSPECTION_TOOLS = frozenset({"list_dir", "find_files", "search_files", "read_file", "read_tool_artifact"})
 
+
+def _requests_delegation(user_input: str) -> bool:
+    prose = re.split(r"(?m)^[ \t]*(?:[`]{3,}|~{3,})[^\n]*", user_input)[::2]
+    return any(_DELEGATION_REQUEST.search(part) for part in prose)
 
 def _followup_workspace_tools(runtime):
     permitted = runtime._permitted_tool_names()
@@ -288,6 +299,8 @@ class AgentEngine:
         plan_continuation_used = False
         final_answer_requested = False
         wire_recovery_used = False
+        delegation_requested = turn.planning_required and _requests_delegation(turn.user_input)
+        delegation_offered = False
 
         max_steps = getattr(runtime.execution_context, "max_steps", None)
         if max_steps is None:
@@ -343,6 +356,17 @@ class AgentEngine:
                 tool_names |= runtime._permitted_tool_names() & {"update_plan"}
                 if "request_question" in runtime._permitted_tool_names():
                     tool_names.add("request_question")
+            delegation_first = (delegation_requested and not delegation_offered and step < max_steps
+                                and native_tool_phase == "plan_active" and "spawn_agents" in tool_names
+                                and runtime.tasks.execution_task_id is not None)
+            if delegation_first:
+                interaction = runtime._interaction_controller.state()
+                delegation_first = not any(interaction.get(key) for key in
+                                           ("executing_plan", "pending_plan", "pending_question"))
+            if delegation_first:
+                delegation_offered = True
+                tool_names &= {"spawn_agents", "request_question"}
+
             previous_replies = [messages[index] for index in previous_reply_indexes]
             _refresh_working_plan_context(runtime, messages)
             provider = runtime.execution_context.provider or runtime.llm_provider
@@ -475,6 +499,14 @@ class AgentEngine:
                 }, request_id=runtime._last_model_request_id.get())
 
             if not response.tool_calls:
+                if delegation_first and response.finish_reason == FinishReason.FINAL:
+                    messages.extend((response if response.continuation else {
+                        "role": "assistant", "content": response.text,
+                    }, {"role": "system", "content": (
+                        "Continue with the permitted workspace tools. Inspect the scope if needed, "
+                        "and consider the user's delegation request before completing the work."
+                    )}))
+                    continue
                 final_text = response.text.strip()
                 if turn.interaction_mode == "plan":
                     final_text = ""
