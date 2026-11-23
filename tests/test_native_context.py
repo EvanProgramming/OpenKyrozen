@@ -600,6 +600,46 @@ class NativeContextTests(unittest.TestCase):
         self.assertEqual(len(provider.requests), 5)
         self.assertEqual(self.runtime.tasks.working_plan.status, "completed")
 
+    def test_native_delegation_guidance_tracks_the_working_plan_gate_and_permission(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        for delegation_allowed in (True, False):
+            with self.subTest(delegation_allowed=delegation_allowed):
+                self.runtime.tasks.clear()
+                permitted = {"update_plan", "read_file", "read_tool_artifact", "discover_tools"}
+                if delegation_allowed:
+                    permitted |= {"spawn_agents", "wait_subagents"}
+
+                def respond(provider, messages, model):
+                    step = len(provider.requests)
+                    block, availability = self.availability(messages)
+                    active = "spawn_agents" in availability["current_call_tools"]
+                    schemas = {spec["name"] for spec in provider.tool_requests[-1]}
+                    self.assertEqual(active, delegation_allowed and step == 2)
+                    self.assertEqual("spawn_agents" in schemas, active)
+                    guidance = {
+                        1: "Delegation becomes available after you start a Working Plan task.",
+                        2: "Call spawn_agents for user-requested independent work before doing it yourself.",
+                        3: "If user-requested delegation remains, start a fresh Working Plan task",
+                    }
+                    self.assertEqual(guidance[step] in block, delegation_allowed)
+                    if step == 1:
+                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                            {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
+                            {"op": "start", "task": "inspect"},
+                        ]})
+                    elif step == 2:
+                        call = ToolCall("read", "read_file", {"path": "notes.txt"})
+                    else:
+                        return ModelResponse(text="The marker is ready.", finish_reason=FinishReason.FINAL)
+                    return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                        continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+                provider = self.provider(respond)
+                answer, _, _ = self.run_native(provider, [{"role": "user", "content": "Check the marker."}],
+                                               complexity="complex", permitted=permitted)
+                self.assertEqual(len(provider.requests), 3, answer)
+                self.assertIn("The marker is ready.", answer)
+
     def test_real_plan_gate_expansion_read_and_completed_confirmation_have_current_guidance(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for streaming in (False, True):

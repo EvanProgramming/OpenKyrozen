@@ -319,6 +319,26 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             phase_guidance = ("The Working Plan is complete. Use update_plan only to confirm completed work, "
                               "or propose_plan to stage a material revision for renewed approval. "
                               "Otherwise, answer the original request using the verified results. ")
+        if "spawn_agents" not in history_names:
+            if "spawn_agents" in current_names:
+                phase_guidance += (
+                    "Call spawn_agents for user-requested independent work before doing it yourself. "
+                    "Use the Working Plan for your own tasks and collect the delegated results before answering. "
+                )
+            elif ((_native_tool_phase == "plan_required" or ordinary_followup)
+                    and "spawn_agents" in self._permitted_tool_names()
+                    and registry.get_spec("spawn_agents").capability in allowed):
+                if _native_tool_phase == "plan_required":
+                    phase_guidance += (
+                        "Delegation becomes available after you start a Working Plan task. "
+                        "If the user asks for delegation, plan your direct work and then use spawn_agents "
+                        "for the independent assignments. "
+                    )
+                else:
+                    phase_guidance += (
+                        "If user-requested delegation remains, start a fresh Working Plan task "
+                        "to make spawn_agents available again. "
+                    )
         after_replies = (
             ((_native_tool_phase == "plan_active" and self.tasks.execution_task_id is not None)
              or _native_tool_phase == "plan_completed")
