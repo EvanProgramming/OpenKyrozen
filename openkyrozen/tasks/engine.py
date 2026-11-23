@@ -552,6 +552,8 @@ class TaskManager:
             "block": {"op", "task", "reason"}, "unblock": {"op", "task", "reason"},
             "start": {"op", "task"}, "suggest_complete": {"op", "task"},
         }
+        optional_by_op = {"add": {"anchor"}, "add_command_check": {"expected_exit_code"},
+                          "bind_command_check": {"expected_exit_code"}}
         if saved is None and not any(isinstance(item, dict)
                                      and item.get("op") in ("add", "add_read_check", "add_command_check")
                                      for item in operations):
@@ -562,9 +564,8 @@ class TaskManager:
             if not isinstance(operation, dict) or operation.get("op") not in allowed_by_op:
                 raise ValueError("each plan operation requires a supported op")
             kind = operation["op"]
-            if set(operation) != allowed_by_op[kind] and not (
-                    kind == "add" and set(operation) == allowed_by_op[kind] | {"anchor"}) and not (
-                    kind == "add_command_check" and set(operation) == allowed_by_op[kind] | {"expected_exit_code"}):
+            required = allowed_by_op[kind]
+            if not required <= set(operation) <= required | optional_by_op.get(kind, set()):
                 raise ValueError(f"{kind} operation has missing or unsupported fields")
             if kind == "add_read_check":
                 path = operation["path"]
@@ -579,10 +580,10 @@ class TaskManager:
                 if not ordinary_plan:
                     raise ValueError("compact command checks are only for ordinary Working Plans")
                 verification = {"action": "run_cmd", "arguments": {"command": operation["command"]}}
+                if "expected_exit_code" in operation:
+                    verification["expect"] = {"exit_code": operation["expected_exit_code"]}
                 if kind == "add_command_check":
                     description = operation["description"]
-                    if "expected_exit_code" in operation:
-                        verification["expect"] = {"exit_code": operation["expected_exit_code"]}
                     operation = {"op": "add", "ref": operation["ref"], "task": {
                         "description": description,
                         "acceptance": [{"criterion": description, "verification": verification}],
@@ -593,7 +594,8 @@ class TaskManager:
                     if not can_bind_command_check(task):
                         raise ValueError("command binding requires a pending prose-only task or a just-selected one before any work, without an execution contract")
                     fields = self._plan_task_fields({"description": task["description"],
-                        "acceptance": [{"criterion": task["acceptance"][0], "verification": verification}]})
+                        "acceptance": [{"criterion": task["acceptance"][0], "verification": verification}]},
+                        ordinary_plan=True)
                     task.update(acceptance=fields["acceptance"], updated_at=now)
                     continue
             if kind == "replace_command_check":

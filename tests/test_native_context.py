@@ -488,21 +488,35 @@ class NativeContextTests(unittest.TestCase):
     def test_native_expected_exit_verifies_task_without_changing_command_result(self):
         import shlex
 
-        for exit_code in (0, 1, 7):
-            with self.subTest(exit_code=exit_code):
+        for exit_code, bind_existing in ((0, False), (1, False), (7, False), (1, True)):
+            with self.subTest(exit_code=exit_code, bind_existing=bind_existing):
                 self.runtime.tasks.clear()
                 command = f"{shlex.quote(sys.executable)} -c 'raise SystemExit({exit_code})'"
+                if bind_existing:
+                    seeded = self.runtime.tasks.edit_plan(expected_revision=0, operations=[
+                        {"op": "add", "ref": "probe", "task": {"description": "Observe the failure",
+                                                             "acceptance": ["Reproduce the failure"]}},
+                    ])
 
                 def respond(provider, messages, model):
                     step = len(provider.requests)
                     if step == 1:
                         tool = next(item for item in provider.tool_requests[-1] if item["name"] == "update_plan")
                         self.assertIn("expected_exit_code", tool["description"])
-                        call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
-                            {"op": "add_command_check", "ref": "probe", "description": "Observe the failure",
-                             "command": command, "expected_exit_code": 1},
-                            {"op": "start", "task": "probe"},
-                        ]})
+                        if bind_existing:
+                            task_id = seeded["references"]["probe"]
+                            arguments = {"plan_id": seeded["plan_id"], "expected_revision": 1, "operations": [
+                                {"op": "bind_command_check", "task": task_id,
+                                 "command": command, "expected_exit_code": 1},
+                                {"op": "start", "task": task_id},
+                            ]}
+                        else:
+                            arguments = {"expected_revision": 0, "operations": [
+                                {"op": "add_command_check", "ref": "probe", "description": "Observe the failure",
+                                 "command": command, "expected_exit_code": 1},
+                                {"op": "start", "task": "probe"},
+                            ]}
+                        call = ToolCall("plan", "update_plan", arguments)
                     elif step == 2:
                         self.assertIsNotNone(self.runtime.tasks.execution_task_id)
                         call = ToolCall("probe", "run_cmd", {"command": command})
@@ -532,7 +546,7 @@ class NativeContextTests(unittest.TestCase):
                 if exit_code == 1:
                     self.assertIn("Observed expected exit status", self.runtime._deterministic_tool_summary([record]))
                 self.assertEqual(self.runtime.tasks.working_plan.status, "completed" if exit_code == 1 else "active")
-                self.assertEqual(self.runtime.tasks.working_plan.revision, 1)
+                self.assertEqual(self.runtime.tasks.working_plan.revision, 2 if bind_existing else 1)
 
     def test_native_failed_verification_can_be_replaced_by_a_compact_command_check(self):
         import shlex

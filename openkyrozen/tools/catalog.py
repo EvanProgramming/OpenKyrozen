@@ -188,6 +188,8 @@ _PLAN_UPDATE_FIELDS_SCHEMA = {'type':'object','properties':{
     'priority': {'type':'integer'},
     'execution': _PLAN_EXECUTION_SCHEMA,
 },'minProperties':1,'additionalProperties':False}
+_EXPECTED_COMMAND_EXIT_CODE = {'type':'integer','minimum':1,'maximum':255,
+    'description':'For an expected failure only. Omit for a command that must exit zero.'}
 _PLAN_OPERATION_SCHEMAS = [
     {'type':'object','properties':{'op':{'type':'string','enum':['add']},
         'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA,
@@ -201,12 +203,12 @@ _PLAN_OPERATION_SCHEMAS = [
         'description':'Add an ordinary task verified by an exact foreground command.'},
         'ref':{'type':'string','minLength':1},'description':{'type':'string','minLength':1},
         'command':{'type':'string','minLength':1},
-        'expected_exit_code':{'type':'integer','minimum':1,'maximum':255,
-            'description':'For an expected failure only. Omit for a command that must exit zero.'}},
+        'expected_exit_code':_EXPECTED_COMMAND_EXIT_CODE},
         'required':['op','ref','description','command'],'additionalProperties':False},
     {'type':'object','properties':{'op':{'type':'string','enum':['bind_command_check'],
         'description':'Bind an exact command to the sole prose criterion of an ordinary task before it runs any work.'},
-        'task':{'type':'string','minLength':1},'command':{'type':'string','minLength':1}},
+        'task':{'type':'string','minLength':1},'command':{'type':'string','minLength':1},
+        'expected_exit_code':_EXPECTED_COMMAND_EXIT_CODE},
         'required':['op','task','command'],'additionalProperties':False},
     {'type':'object','properties':{'op':{'type':'string','enum':['replace_command_check'],
         'description':'Replace and start an unused complete-read check or a check whose verified command failed.'},

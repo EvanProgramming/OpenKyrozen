@@ -148,7 +148,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             if not can_bind_command:
                 unavailable.add("bind_command_check")
             add_command_guidance = (
-                "Use add_command_check with ref, description and command. "
+                "Use add_command_check with ref, description and command for each new command-based check, "
+                "including newly discovered verification. "
                 "Run a failing reproduction command by itself first and keep its own exit status. "
                 "Set expected_exit_code to the expected nonzero status (for example 1). A match verifies the task. "
                 "Use a separate zero-exit check for the post-fix test. "
@@ -205,7 +206,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     )
                     if can_bind_command:
                         criterion_guidance += ("Use bind_command_check with the listed task ID and exact command for a "
-                                               "pending or just-selected prose-only task. Start it in the same call if pending. ")
+                                               "pending or just-selected prose-only task. For a planned failure, include its "
+                                               "expected_exit_code when binding. Start the task in the same call if pending. ")
                     if can_replace_read:
                         criterion_guidance += (
                             "For a source edit after selecting a complete-read check, use one replace_command_check "
