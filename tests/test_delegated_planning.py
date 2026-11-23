@@ -165,9 +165,12 @@ class DelegatedPlanningTests(unittest.TestCase):
             def chat_response(self, messages, model=None, *, tools=None):
                 observed.append(set(item['name'] for item in tools))
                 if not any(isinstance(item, ToolReply) for item in messages):
+                    declaration = next(item for item in tools if item['name'] == 'update_plan')
+                    self_case.assertNotIn('run_cmd', declaration['description'])
                     return ModelResponse(tool_calls=(ToolCall('read', 'read_file', {'path': 'marker.txt'}),),
                                          finish_reason=FinishReason.TOOL_REQUEST)
                 return ModelResponse(text='The assigned file contains simple source.', finish_reason=FinishReason.FINAL)
+        self_case = self
         provider = NativeRead(runtime._provider_config)
         runtime.get_provider = lambda config: provider
         result = runtime._invoke_delegated(self.run, review=False, feedback=None, coordinator=self.coordinator)

@@ -337,7 +337,7 @@ class AgentEngine:
             if cancelled is not None and cancelled.is_set():
                 raise ProviderError(ProviderErrorKind.CANCELLED, terminal=True)
             tool_names = self._native_tool_names()
-            optional_plan = turn.planning_required and scoped_readonly and runtime.tasks.working_plan is None
+            optional_plan = scoped_readonly and runtime.tasks.working_plan is None
             planning_required = turn.planning_required and bool(tool_names) and not optional_plan
             if turn.interaction_mode == "plan":
                 tool_names = {name for name in tool_names
