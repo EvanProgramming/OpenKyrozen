@@ -417,18 +417,27 @@ class OpenAIResponsesProvider(LLMProvider):
                     or not started["id"] or started["id"] != getattr(item, "call_id", None)
                     or not started["name"] or started["name"] != getattr(item, "name", None)
                     or getattr(event, "name", None) not in (None, started["name"])
-                    or not isinstance(original, str) or not isinstance(candidate, str)
-                    or started["arguments"] not in ("", candidate)):
+                    or not isinstance(original, str) or not isinstance(candidate, str)):
                 continue
             if index in finished_items:
                 finished = finished_items[index]
+                complete = getattr(finished, "arguments", None)
                 if (getattr(finished, "type", None) != "function_call"
                         or getattr(finished, "status", None) not in (None, "completed")
                         or getattr(finished, "id", None) != item_id
                         or getattr(finished, "call_id", None) != started["id"]
                         or getattr(finished, "name", None) != started["name"]
-                        or getattr(finished, "arguments", None) != candidate):
+                        or not isinstance(complete, str)):
                     continue
+                if complete != candidate:
+                    # The completed item and streamed deltas must agree byte for
+                    # byte before finishing an identical truncated prefix.
+                    if (not candidate or candidate != original or not complete.startswith(candidate)
+                            or complete != started["arguments"]):
+                        continue
+                    candidate = complete
+            if started["arguments"] not in ("", candidate):
+                continue
             try:
                 json.loads(original, object_pairs_hook=_unique_object)
             except (json.JSONDecodeError, _DuplicateToolArgument) as error:

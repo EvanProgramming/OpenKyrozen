@@ -70,6 +70,11 @@ class ExecutionContext:
     native_completed_predecessor: tuple[str, int, str | None] | None = None
     native_wire_regeneration: bool = False
 
+    @property
+    def scoped_readonly_assignment(self) -> bool:
+        return (bool(self.child_run_id) and self.delegation_tools is not None
+                and self.capability_token is not None and not self.capability_token.allows("write"))
+
 
 def scoped_turn(function):
     """Keep provider selection, authorization and usage local to a turn/context."""

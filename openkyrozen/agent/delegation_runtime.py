@@ -147,6 +147,12 @@ def spawn_agents(self, args):
     assignments = value.get("assignments")
     no_effect = {"delegation_validation_no_effect": True}
     if isinstance(assignments, list):
+        from openkyrozen.agent.engine import _requests_one_delegation
+
+        if len(assignments) > 1 and _requests_one_delegation(self.execution_context.native_control_input):
+            return tool_failure("invalid_arguments",
+                "The user requested one delegated review. Submit one focused assignment and keep other work in the main turn.",
+                retriable=True, metadata=no_effect)
         for assignment in assignments:
             task_id = assignment.get("task_id") if isinstance(assignment, dict) else None
             if task_id is not None and not self._valid_receipt_task_binding(self.current_session, task_id):

@@ -301,7 +301,7 @@ def _system_prompt(self, tools_list: str, agent_config: dict[str, Any] | None = 
     )
 
 
-def _refresh_working_plan_context(self, messages: list) -> None:
+def _refresh_working_plan_context(self, messages: list, *, native: bool = False) -> None:
     """Keep a bounded current plan projection outside evictable conversation history."""
     import json
 
@@ -353,7 +353,8 @@ def _refresh_working_plan_context(self, messages: list) -> None:
             completed_tasks = []
     if (plan is None or plan.status not in {"active", "completed"}
             or completed_tasks == [] or not callable(snapshot)):
-        if plan is None and callable(snapshot) and "update_plan" in permitted:
+        if (plan is None and callable(snapshot) and "update_plan" in permitted
+                and not (native and getattr(self.execution_context, "scoped_readonly_assignment", False))):
             messages.insert(1 if messages else 0, {"role": "system", "content": marker + (
                 "No Working Plan exists. Follow the current update_plan declaration. "
                 "Start the task explicitly before performing its work. "
@@ -482,7 +483,7 @@ def _build_messages(self, user_input: str, learned_context: str = "",
                 "do not expand scope.\n" + json.dumps(summary, ensure_ascii=False)
             )})
 
-    _refresh_working_plan_context(self, messages)
+    _refresh_working_plan_context(self, messages, native=native_tools)
 
     project_instructions = format_instructions(self._get_workspace_root())
     if project_instructions and self._active_interaction_mode.get() == "agent":

@@ -175,6 +175,46 @@ class DelegatedPlanningTests(unittest.TestCase):
         self.assertIn('simple source', result['result'])
         self.assertTrue(any(receipt['call_id'] == 'read' and receipt['success'] for receipt in result['tool_records']))
 
+    def test_complex_readonly_assignment_can_report_scoped_receipts_without_a_second_plan(self):
+        import json
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolReply
+
+        self.run['profile'] = 'researcher'
+        self.run['assignment']['objective'] = 'Audit marker.txt comprehensively and inspect its evidence'
+        (self.root / 'marker.txt').write_text('independent source', encoding='utf-8')
+        runtime, children = self.runtime, []
+
+        class NativeRead(LLMProvider):
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat(self, messages, model=None):
+                raise AssertionError('legacy path used')
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                children.append(runtime.current_session)
+                reply = next((item for item in messages if isinstance(item, ToolReply)), None)
+                if reply is None:
+                    assert {'read_file', 'update_plan'} <= {item['name'] for item in tools}
+                    return ModelResponse(tool_calls=(ToolCall('direct-read', 'read_file', {'path': 'marker.txt'}),),
+                                         finish_reason=FinishReason.TOOL_REQUEST)
+                receipt_id = reply.output['metadata']['receipt_id']
+                return ModelResponse(text=json.dumps({
+                    'status': 'completed', 'summary': 'The assigned source was read.',
+                    'findings': ['Marker contains independent source.'], 'evidence': [{'receipt_id': receipt_id}],
+                    'artifacts': [], 'checks': ['Full file read.'], 'uncertainties': [], 'suggested_followups': [],
+                }), finish_reason=FinishReason.FINAL)
+
+        provider = NativeRead(runtime._provider_config)
+        runtime.get_provider = lambda config: provider
+        result = runtime._invoke_delegated(self.run, review=False, feedback=None, coordinator=self.coordinator)
+        self.assertEqual(len(children), 2)
+        self.assertIsNone(children[0].tasks.working_plan)
+        receipt, = result['tool_records']
+        self.assertTrue(receipt['success'])
+        self.assertEqual(json.loads(result['result'])['evidence'], [{'receipt_id': receipt['receipt_id']}])
+
     def test_actual_complex_readonly_native_child_establishes_own_plan_without_write_authority(self):
         import json
         from openkyrozen.providers.base import LLMProvider
@@ -195,15 +235,16 @@ class DelegatedPlanningTests(unittest.TestCase):
                 replies = [item for item in messages if isinstance(item, ToolReply)]
                 observed.append(set(item['name'] for item in tools))
                 if not replies:
-                    self_case.assertEqual(observed[-1], {'update_plan', 'read_tool_artifact'})
+                    self_case.assertTrue({'update_plan', 'read_tool_artifact', 'read_file'} <= observed[-1])
+                    self_case.assertFalse({'run_cmd', 'write_file', 'spawn_agents'} & observed[-1])
                     declaration = next(tool for tool in tools if tool['name'] == 'update_plan')
                     projected = json.dumps(declaration)
                     self_case.assertIn('add_read_check', projected)
                     self_case.assertNotIn('add_command_check', projected)
                     self_case.assertNotIn('run_cmd', projected)
-                    pinned = next(item['content'] for item in messages if isinstance(item, dict)
-                                  and item.get('content', '').startswith('## Pinned Working Plan state'))
-                    self_case.assertNotIn('python -m unittest', pinned)
+                    guidance = next(item['content'] for item in messages if isinstance(item, dict)
+                                    and item.get('content', '').startswith('## Current native tool availability'))
+                    self_case.assertIn('Your read-only assignment already defines the objective and acceptance', guidance)
                     call = ToolCall('local-plan', 'update_plan', {'expected_revision': 0, 'operations': [
                         {'op': 'add', 'ref': 'inspect', 'task': {'description': 'Inspect assigned marker source',
                             'acceptance': ['Report exact checked source'],

@@ -522,8 +522,8 @@ class StreamEventContractTests(unittest.TestCase):
         messages = [{"role": "user", "content": "go"}]
         for case in ("matched", "initial fragment", "wrong id", "wrong name", "duplicate", "invalid",
                      "redundant terminal", "redundant copies", "conflicting terminal", "typed conflict", "precision conflict",
-                     "terminal and copies disagree",
-                     "fragments disagree", "wrong delta id", "duplicate open", "conflicting item",
+                     "terminal and copies disagree", "two truncated copies", "truncated copies with different prefix",
+                     "truncated copies without agreeing deltas", "fragments disagree", "wrong delta id", "duplicate open", "conflicting item",
                      "incomplete", "wrong terminal status", "second call invalid"):
             with self.subTest(case=case), patch("openkyrozen.providers.usage._track_cost") as track:
                 item = SimpleNamespace(type="function_call", id="fc-1", call_id="call-1",
@@ -536,6 +536,8 @@ class StreamEventContractTests(unittest.TestCase):
                     item.arguments = '{"path":true,"path":1}'
                 elif case == "precision conflict":
                     item.arguments = '{"path":9007199254740992.0,"path":9007199254740993.0}'
+                if case == "truncated copies with different prefix":
+                    item.arguments = '{"different":'
                 original_arguments = item.arguments
                 status = "incomplete" if case == "incomplete" else "completed"
                 response = SimpleNamespace(id="resp", model="m",
@@ -549,20 +551,23 @@ class StreamEventContractTests(unittest.TestCase):
                     item_id="other" if case == "wrong id" else item.id,
                     name="write_file" if case == "wrong name" else item.name,
                     arguments=('{"path":"x","path":"y"}' if case == "invalid"
-                               else item.arguments if case == "redundant copies"
+                               else item.arguments if case == "redundant copies" or "truncated copies" in case
                                else '{"path":9007199254740992.0}' if case == "precision conflict"
                                else '{"path":"y"}' if case == "terminal and copies disagree" else arguments))
                 prefix = arguments[:3] if case == "initial fragment" else ""
                 opening_item = SimpleNamespace(**{**vars(item), "arguments": prefix})
                 opening = SimpleNamespace(type="response.output_item.added", output_index=0, item=opening_item)
                 completed_item = SimpleNamespace(**{**vars(item),
-                    "arguments": '{"path":"y"}' if case == "conflicting item" else done.arguments})
+                    "arguments": ('{"path":"y"}' if case == "conflicting item"
+                                  else arguments if "truncated copies" in case else done.arguments)})
+                streamed = (arguments if "truncated copies" in case
+                            and case != "truncated copies without agreeing deltas" else done.arguments)
                 stream = [
                     opening,
                     *([opening] if case == "duplicate open" else []),
                     SimpleNamespace(type="response.function_call_arguments.delta", output_index=0,
                         item_id="other" if case == "wrong delta id" else item.id,
-                        delta='{"path":"y"}' if case == "fragments disagree" else done.arguments[len(prefix):]),
+                        delta='{"path":"y"}' if case == "fragments disagree" else streamed[len(prefix):]),
                     done,
                     *([done] if case == "duplicate" else []),
                     SimpleNamespace(type="response.output_item.done", output_index=0, item=completed_item),
@@ -575,7 +580,8 @@ class StreamEventContractTests(unittest.TestCase):
                 provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
                 events = list(get_model_events(provider, messages, "m", tools=[tool]))
                 track.assert_called_once()
-                if case not in {"matched", "initial fragment", "redundant terminal", "redundant copies"}:
+                if case not in {"matched", "initial fragment", "redundant terminal", "redundant copies",
+                                "two truncated copies"}:
                     self.assertIsInstance(events[-1], ResponseError)
                     self.assertFalse(any(isinstance(event, ResponseComplete) for event in events))
                     if case == "invalid":

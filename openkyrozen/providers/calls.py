@@ -138,6 +138,12 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                  if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
         current_names = {item["name"] for item in tools if item["name"] in requested_names
                          and registry.get_spec(item["name"]).capability in allowed}
+        from openkyrozen.agent.engine import _requests_one_delegation
+        single_assignment = _requests_one_delegation(self.execution_context.native_control_input)
+        if single_assignment and "spawn_agents" in current_names:
+            declaration = next(item for item in tools if item["name"] == "spawn_agents")
+            declaration["parameters"]["properties"]["assignments"]["maxItems"] = 1
+            declaration["description"] += " This request calls for one focused assignment."
         ordinary_plan_edit = False
         ordinary_followup = False
         command_followup = False
@@ -195,7 +201,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     for operation in variants:
                         operation["properties"].pop("anchor", None)
                 operations["items"]["anyOf"] = variants
-            if _native_tool_phase == "plan_required":
+            if _native_tool_phase in {"plan_required", "plan_optional"}:
                 operations = schema["properties"]["operations"]
                 creation_ops = [item for item in operations["items"]["anyOf"]
                                 if item["properties"]["op"]["enum"][0] in {
@@ -210,7 +216,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     },
                 }
                 plan_tool["description"] = (
-                    "Create the required Working Plan at revision zero. "
+                    ("For multiple dependent inspection steps, optionally create a Working Plan at revision zero. "
+                     if _native_tool_phase == "plan_optional" else "Create the required Working Plan at revision zero. ")
                     + ("For inspection of unknown file contents, use add_read_check with ref and path. "
                        if can_add_read else "")
                     + f"{add_command_guidance}Use add for other work. "
@@ -321,6 +328,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                              "before using workspace tools such as read_file or Git history. Check current_call_tools "
                              "again once active. Use read_tool_artifact only with a "
                              "runtime-provided artifact_id. It does not open workspace files. ",
+            "plan_optional": "Your read-only assignment already defines the objective and acceptance. "
+                             "Use the available scoped inspection tools now and cite their receipt IDs in your report. "
+                             "Use update_plan only if separate dependent checks need tracking. ",
             "plan_active": "The Working Plan is active now. Use current_call_tools in this request "
                            "for the selected task's next action. The plan becomes read-only when the last task finishes. ",
             "plan_completed": "The final tool reply may already have verified the last task. "
@@ -359,6 +369,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         "This request is for the independent assignments. If you need workspace inspection "
                         "to determine their scopes, state that briefly and continue on the next request. "
                     )
+                    if single_assignment:
+                        phase_guidance += ("Delegate the one requested review. Keep its scope to the evidence needed "
+                                           "for that review and handle other inspection in the main turn. ")
             elif ((_native_tool_phase == "plan_required" or ordinary_followup)
                     and "spawn_agents" in self._permitted_tool_names()
                     and registry.get_spec("spawn_agents").capability in allowed):
@@ -368,6 +381,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         "If the user asks for delegation, keep the direct plan short and use spawn_agents "
                         "for the independent assignments. Use scoped reading tools for discovery during work. "
                     )
+                    if single_assignment:
+                        phase_guidance += ("Keep the first plan to a single direct task. Add the final test check "
+                                           "after identifying the test command. Delegate the requested review only. ")
                 else:
                     phase_guidance += (
                         "If user-requested delegation remains, start a fresh Working Plan task "

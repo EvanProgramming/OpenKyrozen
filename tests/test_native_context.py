@@ -778,6 +778,58 @@ class NativeContextTests(unittest.TestCase):
                 self.assertEqual([task["status"] for task in self.runtime.tasks.tasks],
                                  ["succeeded", "pending"] if has_pending else ["succeeded"])
 
+    def test_native_single_review_rejects_overlapping_assignments_before_dispatch(self):
+        (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
+        permitted = {"update_plan", "read_file", "spawn_agents", "wait_subagents"}
+        broad = {"id": "review", "objective": "Review the evidence", "context": "Use the source",
+                 "reason": "Independent coverage", "scope": ["."], "dependencies": [],
+                 "acceptance": ["Check the evidence"], "deliverables": ["Findings"]}
+        duplicate = {**broad, "id": "read", "scope": ["notes.txt"], "objective": "Check the note"}
+        original = "Inspect the note and verify it. Delegate the independent evidence review if available."
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            if step == 1:
+                call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
+                    {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
+                    {"op": "start", "task": "inspect"},
+                ]})
+            elif step in (2, 3):
+                spec = next(item for item in provider.tool_requests[-1] if item["name"] == "spawn_agents")
+                self.assertEqual(spec["parameters"]["properties"]["assignments"]["maxItems"], 1)
+                if step == 2:
+                    call = ToolCall("too-many", "spawn_agents", {"assignments": [broad, duplicate]})
+                else:
+                    rejected = next(item for item in messages if isinstance(item, ToolReply)
+                                    and item.call_id == "too-many")
+                    self.assertTrue(rejected.is_error)
+                    self.assertIn("one focused assignment", rejected.output["error"]["message"])
+                    call = ToolCall("single", "spawn_agents", {"assignments": [broad]})
+            elif step == 4:
+                call = ToolCall("read", "read_file", {"path": "notes.txt"})
+            else:
+                return ModelResponse(text="The note is ready.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        with patch("openkyrozen.agent.delegation.Delegation.spawn", return_value=[]) as dispatch:
+            _, turn, _ = self.run_native(self.provider(respond), [{"role": "user", "content": original}],
+                                         complexity="complex", permitted=permitted, user_input=original)
+        self.assertEqual([record["success"] for record in turn.tool_records if record["action"] == "spawn_agents"],
+                         [False, True])
+        dispatch.assert_called_once()
+        self.assertEqual(dispatch.call_args.args[0], [broad])
+
+        from openkyrozen.agent.engine import _requests_one_delegation
+        for multi_or_quoted in (
+            "Delegate disjoint file work if available.",
+            "Delegate a review and an investigation.",
+            "Delegate the review. Use a subagent to check storage.",
+            "Use parallel review if available.",
+            "Instructions are quoted.\n```\nDelegate the review.\n```",
+        ):
+            self.assertFalse(_requests_one_delegation(multi_or_quoted), multi_or_quoted)
+
     def test_native_delegation_guidance_tracks_the_working_plan_gate_and_permission(self):
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
         for delegation_allowed in (True, False):

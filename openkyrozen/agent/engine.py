@@ -16,8 +16,18 @@ _NATIVE_CONTROLS = frozenset({"propose_plan", "request_question"})
 
 _DELEGATION_REQUEST = re.compile(
     r"(?:^|[.!?]\s+|\n\s*(?:[-*]\s+)?)\s*(?:please\s+)?"
-    r"(?:delegate\s+|use\s+(?:an?\s+)?(?:parallel\s+reviews?|sub[- ]?agents?)\b)",
+    r"(?P<action>delegate\s+|use\s+(?:(?:an?|one)\s+)?(?:parallel\s+reviews?|sub[- ]?agents?)\b)",
     re.IGNORECASE,
+)
+
+_SINGLE_DELEGATION_REQUEST = re.compile(
+    r"^(?:delegate\s+(?:a|an|one|the)\s+(?:[\w-]+\s+){0,4}(?:review|investigation)\b"
+    r"|use\s+(?:a|one)\s+sub[- ]?agent\b)",
+    re.IGNORECASE,
+)
+_DELEGATION_SENTENCE_END = re.compile(r"[!?\n]|\.(?:\s|$)")
+_PARALLEL_DELEGATION_REQUEST = re.compile(
+    r"\b(?:parallel|disjoint|multiple|separate\s+assignments|and|or|[2-9]\d*|two|three)\b", re.IGNORECASE,
 )
 
 
@@ -25,9 +35,24 @@ _FOLLOWUP_WRITE_TOOLS = frozenset({"write_file", "edit_file", "apply_patch"})
 _INSPECTION_TOOLS = frozenset({"list_dir", "find_files", "search_files", "read_file", "read_tool_artifact"})
 
 
-def _requests_delegation(user_input: str) -> bool:
+def _delegation_directives(user_input: str):
     prose = re.split(r"(?m)^[ \t]*(?:[`]{3,}|~{3,})[^\n]*", user_input)[::2]
-    return any(_DELEGATION_REQUEST.search(part) for part in prose)
+    for part in prose:
+        for match in _DELEGATION_REQUEST.finditer(part):
+            end = _DELEGATION_SENTENCE_END.search(part, match.end())
+            yield part[match.start("action"):end.start() if end else len(part)]
+
+
+def _requests_delegation(user_input: str) -> bool:
+    return any(_delegation_directives(user_input))
+
+
+def _requests_one_delegation(user_input: str) -> bool:
+    directives = _delegation_directives(user_input)
+    directive = next(directives, "")
+    return (_SINGLE_DELEGATION_REQUEST.match(directive) is not None
+            and _PARALLEL_DELEGATION_REQUEST.search(directive) is None and next(directives, None) is None)
+
 
 def _followup_workspace_tools(runtime):
     permitted = runtime._permitted_tool_names()
@@ -300,6 +325,7 @@ class AgentEngine:
         final_answer_requested = False
         wire_recovery_used = False
         delegation_requested = turn.planning_required and _requests_delegation(turn.user_input)
+        scoped_readonly = getattr(runtime.execution_context, "scoped_readonly_assignment", False)
         delegation_attempts = 0
         retry_delegation = False
 
@@ -311,7 +337,8 @@ class AgentEngine:
             if cancelled is not None and cancelled.is_set():
                 raise ProviderError(ProviderErrorKind.CANCELLED, terminal=True)
             tool_names = self._native_tool_names()
-            planning_required = turn.planning_required and bool(tool_names)
+            optional_plan = turn.planning_required and scoped_readonly and runtime.tasks.working_plan is None
+            planning_required = turn.planning_required and bool(tool_names) and not optional_plan
             if turn.interaction_mode == "plan":
                 tool_names = {name for name in tool_names
                               if name in _NATIVE_CONTROLS or (
@@ -333,6 +360,8 @@ class AgentEngine:
             if (native_tool_phase is None and turn.interaction_mode == "agent"
                     and getattr(getattr(runtime, "tasks", None), "execution_task_id", None)):
                 native_tool_phase = "plan_active"
+            if optional_plan and "update_plan" in tool_names:
+                native_tool_phase = "plan_optional"
             if final_answer_requested:
                 tool_names = set()
                 native_tool_phase = None
@@ -371,7 +400,7 @@ class AgentEngine:
                 tool_names = tool_names & {"spawn_agents", "request_question"}
 
             previous_replies = [messages[index] for index in previous_reply_indexes]
-            _refresh_working_plan_context(runtime, messages)
+            _refresh_working_plan_context(runtime, messages, native=True)
             provider = runtime.execution_context.provider or runtime.llm_provider
             protocol_for = getattr(provider, "native_tool_protocol_for", None)
             command_protocol = (native_tool_phase == "plan_completed" and callable(protocol_for)
