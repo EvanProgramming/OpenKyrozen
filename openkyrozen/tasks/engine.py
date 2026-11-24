@@ -26,6 +26,15 @@ def can_bind_command_check(task):
                  or task["status"] == "running" and checkpoint.get("native_execution_selected")))
 
 
+def pending_reproduction_task(manager):
+    task_id = manager.execution_task_id or manager.active_task_id()
+    task = manager.active_working_task(task_id) if task_id else None
+    if (task and can_bind_command_check(task)
+            and re.match(r"^\s*reproduc(?:e|tion)\b", task["description"], re.IGNORECASE)):
+        return task
+    return None
+
+
 def can_replace_complete_read_check(task):
     checkpoint = task.get("checkpoint") or {}
     criteria = task.get("acceptance", ())

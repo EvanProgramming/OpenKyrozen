@@ -173,7 +173,9 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
             can_add_command = ordinary_work and "run_cmd" in verification_tools
             can_add_read = ordinary_plan_edit and "read_file" in verification_tools
             ordinary_followup = _native_tool_phase == "plan_completed" and ordinary_work
-            from openkyrozen.tasks.engine import can_bind_command_check, can_replace_complete_read_check
+            from openkyrozen.tasks.engine import (
+                can_bind_command_check, can_replace_complete_read_check, pending_reproduction_task,
+            )
             command_tasks = [task for task in self.tasks.tasks if task["id"] in plan.task_ids] if (
                 _native_tool_phase == "plan_active" and plan is not None
                 and can_add_command and "run_cmd" in current_names) else ()
@@ -266,6 +268,28 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                         f"{criterion_guidance}Use exact tool arguments for typed verification. "
                         "Combine compatible operations in execution order."
                     )
+                    protocol_for = getattr(provider, "native_tool_protocol_for", None)
+                    reproduction = (pending_reproduction_task(self.tasks) if command_tasks
+                                    and callable(protocol_for) and protocol_for(messages) == "openai-responses"
+                                    else None)
+                    if reproduction:
+                        bind = next(item for item in properties["operations"]["items"]["anyOf"]
+                                    if item["properties"]["op"]["enum"] == ["bind_command_check"])
+                        fields = bind["properties"]
+                        alternatives = [{
+                            "type": "object", "additionalProperties": False,
+                            "required": ["command", "expected_exit_code"],
+                            "properties": {
+                                "command": {**fields["command"], "description": "Run the reproducer alone, without a shell wrapper."},
+                                "expected_exit_code": fields["expected_exit_code"],
+                            },
+                        }]
+                        plan_tool["description"] = (
+                            "The first runnable task is the reproduction. Use only command and expected_exit_code "
+                            "to bind and start its exact failing command in one call. "
+                            "The runtime binds the current task and revision. Run that exact command in the next call. "
+                            + plan_tool["description"]
+                        )
                 else:
                     operations = properties["operations"]
                     variants = operations["items"]["anyOf"]

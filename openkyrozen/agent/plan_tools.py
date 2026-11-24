@@ -136,6 +136,24 @@ def _update_plan(self, arguments: dict):
     commit_attempts = self.tasks._plan_commit_attempts
     try:
         operations = arguments.get("operations")
+        if operations and self.execution_context.native_plan_active and not self.execution_context.child_run_id:
+            from openkyrozen.tasks.engine import pending_reproduction_task
+
+            interaction = self._interaction_controller.state()
+            reproduction = (pending_reproduction_task(self.tasks) if not interaction.get("executing_plan")
+                            and not interaction.get("pending_plan") else None)
+            if reproduction:
+                for operation in operations:
+                    if operation.get("op") != "update" or operation.get("task") != reproduction["id"]:
+                        continue
+                    fields = operation["fields"]
+                    if ((fields.get("execution") or {}).get("action") == "run_cmd"
+                            or any(isinstance(criterion, dict) and criterion["verification"]["action"] == "run_cmd"
+                                   for criterion in fields.get("acceptance", ()))):
+                        raise ValueError(
+                            "Bind the reproduction with bind_command_check and start the same task. "
+                            "For a direct failing command, set expected_exit_code and run the exact command by itself"
+                        )
         if arguments.get("plan_id") is None:
             interaction = self._interaction_controller.state()
             if interaction.get("executing_plan") or interaction.get("pending_plan"):

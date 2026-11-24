@@ -812,6 +812,17 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                         and _requests_one_delegation(self.execution_context.native_control_input)):
                     # A single native read-check declaration for a requested review selects only that read.
                     args = {**args, "operations": [operation, {"op": "start", "task": operation["ref"]}]}
+            elif set(args) == {"command", "expected_exit_code"} and native_plan_start.status == "active":
+                from openkyrozen.tasks.engine import pending_reproduction_task
+
+                interaction = self._interaction_controller.state()
+                task = (pending_reproduction_task(self.tasks)
+                        if not interaction.get("executing_plan") and not interaction.get("pending_plan")
+                        and not self.execution_context.child_run_id else None)
+                if task and "run_cmd" in self._permitted_tool_names():
+                    args = {"plan_id": native_plan_start.id, "expected_revision": native_plan_start.revision,
+                            "operations": [{"op": "bind_command_check", "task": task["id"], **args},
+                                           {"op": "start", "task": task["id"]}]}
             elif set(args) == {"description", "command"}:
                 from openkyrozen.agent.engine import _can_start_command_followup
 

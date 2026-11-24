@@ -376,6 +376,59 @@ class NativeContextTests(unittest.TestCase):
         self.assertEqual(len(provider.requests), 7)
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
 
+    def test_responses_binds_a_seeded_reproduction_to_its_explicit_exit_status(self):
+        import shlex
+        from openkyrozen.providers.openai import OpenAIResponsesProvider
+
+        manager = self.runtime.tasks
+        identity = self.runtime._conversation_turn_id.set("typed-reproduction")
+        self.addCleanup(self.runtime._conversation_turn_id.reset, identity)
+        plan = manager.update_plan(complexity="complex", tasks=[
+            {"description": "Reproduce the failure", "acceptance": ["Observe the reported exit status."]},
+        ])
+        task_id, = plan.task_ids
+        command = f"{shlex.quote(sys.executable)} -c 'raise SystemExit(7)'"
+        short_binding = {"command": command, "expected_exit_code": 7}
+        wrong_binding = {"plan_id": plan.id, "expected_revision": plan.revision, "operations": [
+            {"op": "update", "task": task_id, "fields": {
+                "acceptance": [{"criterion": "The command fails", "verification": {
+                    "action": "run_cmd", "arguments": {"command": command}}}]}},
+            {"op": "start", "task": task_id},
+        ]}
+
+        def respond(provider, messages, model):
+            step = len(provider.requests)
+            if step == 1:
+                schema = next(item["parameters"] for item in provider.tool_requests[-1]
+                              if item["name"] == "update_plan")
+                self.assertFalse(self.runtime.tool_registry._argument_error(schema, short_binding))
+                call = ToolCall("vague-binding", "update_plan", wrong_binding)
+            elif step == 2:
+                rejected = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "vague-binding")
+                self.assertTrue(rejected.is_error)
+                self.assertIn("bind_command_check", rejected.output["error"]["message"])
+                self.assertEqual(manager.working_plan.revision, plan.revision)
+                self.assertIsNone(manager.execution_task_id)
+                call = ToolCall("bind", "update_plan", short_binding)
+            elif step == 3:
+                self.assertEqual(manager.execution_task_id, task_id)
+                call = ToolCall("reproduce", "run_cmd", {"command": command})
+            else:
+                receipt = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "reproduce")
+                self.assertEqual(receipt.output["data"]["exit_code"], 7)
+                self.assertEqual(receipt.output["working_plan_progress"]["task_status"], "succeeded")
+                return ModelResponse(text="Observed the expected exit status 7.", finish_reason=FinishReason.FINAL)
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+
+        with patch.object(self.runtime, "_effective_execution_capabilities", return_value={"read", "write", "shell"}):
+            answer, turn, _ = self.run_native(self.provider(respond, provider_base=OpenAIResponsesProvider),
+                [{"role": "user", "content": "Reproduce the reported failure."}], complexity="complex",
+                permitted={"update_plan", "run_cmd"})
+        self.assertIn("expected exit status 7", answer)
+        self.assertEqual(turn.runtime_status, "completed")
+        self.assertEqual(manager.working_plan.status, "completed")
+
     def test_responses_completed_plan_command_form_preserves_scope_and_creates_a_bound_check(self):
         import shlex
         from dataclasses import replace
