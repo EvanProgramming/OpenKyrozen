@@ -73,6 +73,10 @@ def assignment_key(brief):
     return brief["objective"].strip().lower(), tuple(sorted(brief["scope"]))
 
 
+def broad_scope(root, paths):
+    return len(paths) > 1 or "." in paths or any((root / path).is_dir() for path in paths)
+
+
 def _report_object(value):
     if isinstance(value, str):
         value = value.strip()
@@ -426,10 +430,8 @@ class Delegation:
 
     def _requires_review(self, brief):
         profile = self.profiles[brief.get("profile", "researcher")]
-        broad_scope = len(brief["scope"]) > 1 or "." in brief["scope"] or any(
-            (self.root / path).is_dir() for path in brief["scope"]
-        )
-        return profile.capabilities != "readonly" or broad_scope or brief.get("risk", "normal") == "high"
+        return (profile.capabilities != "readonly" or broad_scope(self.root, brief["scope"])
+                or brief.get("risk", "normal") == "high")
 
     def spawn(self, assignments, *, budget=None):
         if not isinstance(assignments, list) or not assignments:

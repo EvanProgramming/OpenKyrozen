@@ -14,7 +14,7 @@ from dataclasses import replace
 
 from openkyrozen.agent.delegation import (
     Delegation, DelegationRequestError, TERMINAL, TOOLS, WorkspaceAccess,
-    complete_source_reads, focused_review_report,
+    broad_scope, complete_source_reads, focused_review_report,
 )
 from openkyrozen.agent.models import WorkspaceState
 from openkyrozen.agent.turn import ExecutionContext
@@ -382,7 +382,8 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
                for allowed in allowed_artifacts)]
     review_paths = frozenset()
     inventory_path = None
-    if (review and not profile.metadata["artifacts"] and brief.get("risk") != "high"
+    if (review and broad_scope(coordinator.root, brief["scope"])
+            and not profile.metadata["artifacts"] and brief.get("risk") != "high"
             and "read_file" in tools and self.subagent_manager.profiles[run["profile"]].capabilities == "readonly"
             and getattr(getattr(provider, "get_capabilities", lambda _: None)(model), "native_tools", False)):
         source_records = run.get("result", {}).get("tool_records", [])
