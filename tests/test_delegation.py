@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from openkyrozen.agent.delegation import Delegation, NAMES, WorkspaceAccess, identicon, report
+from openkyrozen.agent.delegation import Delegation, NAMES, WorkspaceAccess, focused_review_report, identicon, report
 from openkyrozen.app.bootstrap import build_application, build_memory
 from openkyrozen.app.config import load_agent_config, AgentConfigError
 from openkyrozen.providers.config import ProviderConfig
@@ -589,6 +589,60 @@ class DelegationTests(unittest.TestCase):
                     self.assertEqual([item["role"] for item in displayed], ["user", "assistant"])
                     self.assertEqual(displayed, history.display_messages())
                 self.assertEqual(detail.get("conversation_workspace_id"), scope)
+
+    def test_focused_native_review_reads_sources_and_binds_its_own_evidence(self):
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply
+
+        (self.root / "test_marker.txt").write_text("expected: ok\n")
+        paths = ["marker.txt", "test_marker.txt"]
+        review_requests = []
+
+        class Provider(LLMProvider):
+            def chat(self, messages, model=None):
+                raise AssertionError("focused review must use native tools")
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                review = next((item["content"] for item in messages if isinstance(item, dict)
+                               and '"fresh_review_sources"' in item.get("content", "")), None)
+                saw_reads = any(isinstance(item, ToolReply) for item in messages)
+                if review:
+                    marker = "## Current native tool availability\n"
+                    availability = next(item["content"].removeprefix(marker).splitlines()[0] for item in messages
+                                        if isinstance(item, dict) and item.get("content", "").startswith(marker))
+                    review_requests.append(json.loads(availability)["current_call_tools"])
+                    if '"content": "ok"' not in review or '"content": "expected: ok\\n"' not in review:
+                        raise AssertionError("expected independently read source contents")
+                if not saw_reads and not review:
+                    calls = tuple(ToolCall(f"source-{index}", "read_file", {"path": path})
+                                  for index, path in enumerate(paths))
+                    return ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_REQUEST)
+                answer = ({"verdict": "verified", "summary": "The marker matches the expected value."}
+                          if review else result())
+                return ModelResponse(text=json.dumps(answer), finish_reason=FinishReason.FINAL)
+
+        self.runtime.get_provider = Provider
+        coordinator = self.runtime.delegation()
+        self.addCleanup(coordinator.close)
+        agent, = coordinator.spawn([brief(risk="normal", scope=["."], context="Compare marker.txt with test_marker.txt")])
+        run, = coordinator.wait([agent["run_id"]], timeout=10)
+        self.assertEqual(run["status"], "succeeded", run.get("error"))
+        self.assertEqual(review_requests, [[]])
+        verdict, = run["reviews"]
+        own_receipts = {item["receipt_id"] for item in verdict["tool_receipts"]}
+        self.assertEqual({item["receipt_id"] for item in verdict["evidence"]}, own_receipts)
+        self.assertTrue(own_receipts.isdisjoint(item["receipt_id"] for item in run["result"]["tool_records"]))
+        self.assertEqual([item["path"] for item in verdict["evidence"]], paths)
+        self.assertEqual(verdict["findings"], [])
+
+    def test_focused_review_cannot_verify_unread_sources_or_model_receipt_ids(self):
+        proposal = {"verdict": "verified", "summary": "I checked everything.", "evidence": ["made-up"]}
+        result = focused_review_report(json.dumps(proposal), [])
+        self.assertEqual(result["verdict"], "unverifiable")
+        self.assertEqual(result["evidence"], [])
 
     def test_detail_old_runs_fall_back_only_when_the_source_journal_is_absent(self):
         from openkyrozen.agent.conversation import ConversationHistory

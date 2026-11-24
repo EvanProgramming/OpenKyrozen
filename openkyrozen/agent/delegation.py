@@ -73,7 +73,7 @@ def assignment_key(brief):
     return brief["objective"].strip().lower(), tuple(sorted(brief["scope"]))
 
 
-def report(value, *, review=False):
+def _report_object(value):
     if isinstance(value, str):
         value = value.strip()
         if value.startswith("```"):
@@ -81,6 +81,11 @@ def report(value, *, review=False):
         value = json.loads(value)
     if not isinstance(value, dict):
         raise ValueError("Result must be a JSON object")
+    return value
+
+
+def report(value, *, review=False):
+    value = _report_object(value)
     if review:
         if value.get("verdict") not in {"verified", "changes_requested", "unverifiable"}:
             raise ValueError("Review requires a valid verdict")
@@ -94,6 +99,48 @@ def report(value, *, review=False):
     if any(not isinstance(value.get(key), list) for key in keys):
         raise ValueError("Result requires arrays: " + ", ".join(keys))
     return value
+
+
+def complete_source_reads(records, root):
+    """Index small, complete native source reads by their workspace-relative path."""
+    from openkyrozen.agent.subagent_runtime import _receipt_argument
+
+    reads = {}
+    for record in records:
+        if (record.get("action") != "read_file" or record.get("success") is not True
+                or record.get("authorized") is not True or record.get("call_id_source") != "native"):
+            continue
+        observed = (record.get("verification") or {}).get("observed") or {}
+        data = record.get("result_data")
+        if (observed.get("complete_file") is not True or not isinstance(data, dict)
+                or not isinstance(data.get("content"), str)):
+            continue
+        raw = _receipt_argument(record.get("args"), "path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        path = (root / raw).resolve()
+        if path.is_relative_to(root):
+            reads[path.relative_to(root).as_posix()] = record
+    return reads
+
+
+def focused_review_report(value, sources):
+    """Bind a focused verdict to fresh source receipts from its own reviewer."""
+    verdict = _report_object(value)
+    findings = verdict.get("findings", [])
+    if isinstance(findings, str):
+        findings = [findings] if findings.strip() else []
+    result = {
+        "verdict": verdict.get("verdict"),
+        "summary": verdict.get("summary"),
+        "findings": findings,
+        "evidence": [{"receipt_id": source["receipt_id"], "path": source["path"]}
+                     for source in sources],
+    }
+    report(result, review=True)
+    if result["verdict"] == "verified" and not sources:
+        result.update(verdict="unverifiable", summary="Reviewer has no independent source receipts")
+    return result
 
 
 class WorkspaceAccess:
