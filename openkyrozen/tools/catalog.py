@@ -361,6 +361,23 @@ _SCHEMAS['update_plan']['anyOf'] = [
      'required': ['complexity', 'tasks'], 'additionalProperties': False},
 ]
 
+_TEST_REVIEW_SCHEMA = {
+    'type': 'object', 'additionalProperties': False, 'required': ['scope', 'focus'],
+    'properties': {
+        'scope': {**_ASSIGNMENT_LIST, 'minItems': 1,
+                  'description': 'Workspace paths. Use . if the tests have yet to be located.'},
+        'focus': {**_ASSIGNMENT_TEXT, 'maxLength': 1000,
+                  'description': 'The behavior or contract to inspect in the tests.'},
+    },
+}
+_spawn_schema = _SCHEMAS['spawn_agents']
+_SCHEMAS['spawn_agents'] = {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {**_spawn_schema['properties'], 'test_review': _TEST_REVIEW_SCHEMA},
+    'anyOf': [_spawn_schema, {'required': ['test_review'], 'properties': {'test_review': _TEST_REVIEW_SCHEMA},
+                             'type': 'object', 'additionalProperties': False}],
+}
+
 _SCHEMAS['propose_plan'] = {'type':'object','properties':{
     'title':{'type':'string','minLength':1,'maxLength':120},
     'summary':{'type':'string','minLength':1,'maxLength':1000},

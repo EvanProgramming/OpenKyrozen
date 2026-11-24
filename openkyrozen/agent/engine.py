@@ -1,8 +1,10 @@
 """Canonical foreground turn engine with a bounded structured-tool loop."""
 from __future__ import annotations
 
+import ast
 import json
 import re
+from pathlib import Path
 
 from openkyrozen.agent.turn import TurnContext
 from openkyrozen.providers.models import FinishReason, ProviderContractError, TextDelta, ToolCallDelta, ToolReply
@@ -52,6 +54,33 @@ def _requests_one_delegation(user_input: str) -> bool:
     directive = next(directives, "")
     return (_SINGLE_DELEGATION_REQUEST.match(directive) is not None
             and _PARALLEL_DELEGATION_REQUEST.search(directive) is None and next(directives, None) is None)
+
+
+def _requests_one_test_review(user_input: str) -> bool:
+    return (_requests_one_delegation(user_input)
+            and re.search(r"\btests?\s+review\b", next(_delegation_directives(user_input), ""), re.I) is not None)
+
+
+def _unittest_command_from_read(data):
+    """Suggest a standard-library runner from a complete, ordinary test file."""
+    if (not isinstance(data, dict) or not isinstance(data.get("path"), str)
+            or not isinstance(data.get("content"), str) or len(data["content"]) > 65_536
+            or data.get("truncated") is not False or data.get("start_line") != 1
+            or data.get("end_line") != data.get("total_lines")):
+        return None
+    path = Path(data["path"])
+    if (path.suffix != ".py" or not path.stem.startswith("test_")
+            or not all(part.isidentifier() for part in path.with_suffix("").parts)):
+        return None
+    try:
+        nodes = ast.parse(data["content"]).body
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    if any(isinstance(node, ast.ImportFrom) and node.module == "unittest" and node.level == 0
+           or isinstance(node, ast.Import) and any(name.name == "unittest" for name in node.names)
+           for node in nodes):
+        return "python -m unittest " + path.as_posix()
+    return None
 
 
 def _followup_workspace_tools(runtime):
@@ -665,6 +694,15 @@ class AgentEngine:
                 from openkyrozen.agent.conversation import tool_result_to_dict
                 outcome = receipt.tool_result or ToolResult(data=receipt.result_data, text=receipt.result)
                 reply_data = tool_result_to_dict(outcome)
+                if (call["action"] == "read_file" and outcome.success and getattr(receipt, "authorized", False)
+                        and getattr(receipt, "tool_source", None) == "builtin"
+                        and not runtime.execution_context.child_run_id and "run_cmd" in runtime._permitted_tool_names()):
+                    command = _unittest_command_from_read(outcome.data)
+                    if command:
+                        reply_data["test_command_hint"] = {
+                            "runner": "unittest", "command": command,
+                            "use": "This file imports unittest. Use this command if the project has no configured test runner.",
+                        }
                 if (receipt.action == "wait_subagents" and receipt.success
                         and getattr(receipt, "authorized", False) and getattr(receipt, "tool_source", None) == "builtin"):
                     data = reply_data["data"]
@@ -730,6 +768,27 @@ class AgentEngine:
                                 "arguments with the structured acceptance in the pinned Working Plan before "
                                 "taking further action. If the criterion is wrong, cancel and replace the task."
                             )
+                if (selected_task_id and call["action"] == "run_cmd" and not outcome.success
+                        and not runtime.execution_context.child_run_id
+                        and "update_plan" in runtime._permitted_tool_names()):
+                    current = runtime.tasks.working_plan
+                    selected = next((task for task in runtime.tasks.tasks if task["id"] == selected_task_id), None)
+                    last_evidence = ((selected.get("evidence") or [{}])[-1]
+                                     if selected and selected["status"] == "running" else {})
+                    if (current and selected and current.id == record.get("plan_id")
+                            and not (selected.get("checkpoint") or {}).get("strategic_plan")
+                            and last_evidence.get("receipt_id") == receipt.receipt_id
+                            and type(last_evidence.get("failed_command_exit_code")) is int):
+                        reply_data["command_replacement"] = {
+                            "plan_id": current.id, "expected_revision": current.revision,
+                            "operations": [{"op": "replace_command_check", "task": selected_task_id,
+                                            "ref": "corrected_check"}],
+                        }
+                        reply_data["next_request"] = (
+                            "If this command was incorrect, add the corrected command to command_replacement "
+                            "and send it to update_plan. This operation starts the replacement. "
+                            "An expected failure belongs in the evidence for the reproduction."
+                        )
                 if outcome.success and call["action"] == "update_plan":
                     active_task_id = runtime.tasks.execution_task_id
                     if active_task_id and active_task_id != selected_task_id:

@@ -142,18 +142,39 @@ def spawn_agents(self, args):
     test command to a researcher, or scoped edits to a coder. Run required commands and capture
     their output in the main turn. Start independent work while the plan is active and use
     wait_subagents with the returned run IDs to collect the verified results.
+    For an explicitly requested single independent test review, supply test_review with scope
+    and focus instead of a custom brief.
     """
     if self.execution_context.child_run_id:
         raise ValueError("Only the main agent can delegate")
     value, error = _typed_json_args(args)
     if error:
         return error
-    assignments = value.get("assignments")
     no_effect = {"delegation_validation_no_effect": True}
-    if isinstance(assignments, list):
-        from openkyrozen.agent.engine import _requests_one_delegation
+    from openkyrozen.agent.engine import _requests_one_delegation, _requests_one_test_review
 
-        if len(assignments) > 1 and _requests_one_delegation(self.execution_context.native_control_input):
+    user_input = self.execution_context.native_control_input
+    assignments = value.get("assignments")
+    if "test_review" in value:
+        review = value["test_review"]
+        if (set(value) != {"test_review"} or not _requests_one_test_review(user_input)
+                or not isinstance(review, dict) or set(review) != {"scope", "focus"}
+                or not isinstance(review["scope"], list) or not review["scope"]
+                or not isinstance(review["focus"], str) or not review["focus"].strip()
+                or len(review["focus"]) > 1000):
+            return tool_failure("invalid_arguments", "A test review requires an explicit user request and scoped paths.",
+                                retriable=True, metadata=no_effect)
+        assignments = [{
+            "profile": "researcher",
+            "objective": "Independently inspect the relevant tests and source within the assigned scope.",
+            "context": "Identify the requested behavior and how the repository verifies it. Focus: " + review["focus"],
+            "reason": "The user requested an independent test review.",
+            "scope": review["scope"], "dependencies": [],
+            "acceptance": ["Read the relevant tests and cite the assertions and source that establish the expected behavior."],
+            "deliverables": ["Summarize the verified source findings and recommend the repository's verification command."],
+        }]
+    if isinstance(assignments, list):
+        if len(assignments) > 1 and _requests_one_delegation(user_input):
             return tool_failure("invalid_arguments",
                 "The user requested one delegated review. Submit one focused assignment and keep other work in the main turn.",
                 retriable=True, metadata=no_effect)

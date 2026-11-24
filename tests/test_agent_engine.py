@@ -298,6 +298,18 @@ class AgentEngineTests(unittest.TestCase):
         permitted.difference_update({"spawn_agents", "wait_subagents"})
         self.assertEqual(engine._native_tool_names(), permitted)
 
+    def test_unittest_command_hint_requires_complete_test_source(self):
+        from openkyrozen.agent.engine import _unittest_command_from_read
+
+        data = {"path": "tests/test_parser.py", "content": "from unittest import TestCase\n",
+                "truncated": False, "start_line": 1, "end_line": 1, "total_lines": 1}
+        self.assertEqual(_unittest_command_from_read(data), "python -m unittest tests/test_parser.py")
+        for changes in ({"truncated": True}, {"start_line": 2}, {"content": "# import unittest\n"},
+                        {"content": "from .unittest import TestCase\n"}, {"path": "test_parser;echo.py"},
+                        {"path": "../test_parser.py"}, {"path": "parser.py"}):
+            with self.subTest(changes=changes):
+                self.assertIsNone(_unittest_command_from_read({**data, **changes}))
+
     def test_native_can_wait_for_delegation_after_its_working_plan_completes(self):
         runtime = self.complex_native_runtime()
         runtime.execution_context.max_steps = 4

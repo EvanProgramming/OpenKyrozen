@@ -21,8 +21,10 @@ TOOLS = builtin_names("orchestration")
 TERMINAL = {"succeeded", "unverified", "failed", "blocked", "cancelled", "interrupted"}
 REPORT_LISTS = ("findings", "evidence", "artifacts", "checks", "uncertainties", "suggested_followups")
 _DELEGATED_COMMAND_OUTPUT = re.compile(
-    r"\b(?:test\s+)?commands?(?:\s*\(s\))?\s+(?:(?:were|it)\s+)?(?:run|executed)\b"
-    r"[^.!?\n]{0,80}\b(?:output|exit\s+(?:code|status))\b", re.IGNORECASE,
+    r"\b(?:(?:test\s+)?commands?(?:\s*\(s\))?\s+(?:(?:were|it)\s+)?(?:run|executed)\b"
+    r"[^.!?\n]{0,80}\b(?:output|exit\s+(?:code|status))"
+    r"|(?<!expected )(?<!predicted )current\s+(?:test\s+)?pass\s*/\s*fail\s+status"
+    r"|whether (?:the (?:test|suite|command)s?|it) (?:currently )?passes? or fails?)\b", re.IGNORECASE,
 )
 GUIDANCE = '''Delegate automatically when independent work can run in parallel or a specialist can
 materially improve the result. Do not delegate greetings, single lookups, or duplicate work.

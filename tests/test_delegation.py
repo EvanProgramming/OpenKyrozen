@@ -96,12 +96,36 @@ class DelegationTests(unittest.TestCase):
                       "acceptance": ["Report includes the exact test command(s) run and verbatim output summary"]}
         budget = DelegationBudget()
         remaining = budget.remaining_picos
-        with self.assertRaisesRegex(DelegationRequestError, "Run it in the main turn"):
-            coordinator.spawn([assignment], budget=budget)
+        for criterion in (assignment["acceptance"][0], "Report the exact command and whether it currently passes or fails",
+                          "Exact test command and current pass/fail status"):
+            with self.subTest(criterion=criterion), self.assertRaisesRegex(DelegationRequestError, "Run it in the main turn"):
+                coordinator.spawn([{**assignment, "acceptance": [criterion]}], budget=budget)
         self.assertEqual(coordinator.list(), [])
         self.assertEqual(budget.remaining_picos, remaining)
         valid = {**assignment, "acceptance": ["Cite the test assertion and recommend the verification command"]}
         self.assertEqual(coordinator._brief(valid)["acceptance"], valid["acceptance"])
+
+    def test_requested_test_review_uses_readonly_brief_without_execution_deliverables(self):
+        from openkyrozen.agent.delegation_runtime import spawn_agents
+
+        coordinator = self.runtime.delegation()
+        execute = spawn_agents.__tool_result_executor__
+        args = {"test_review": {"scope": ["marker.txt"], "focus": "the empty-input behavior"}}
+        with patch.object(coordinator, "spawn", return_value=[{"run_id": "review"}]) as dispatch:
+            rejected = execute(self.runtime, args)
+            self.assertFalse(rejected.success)
+            dispatch.assert_not_called()
+            self.runtime.execution_context.native_control_input = "Fix the parser. Delegate the independent test review if available."
+            accepted = execute(self.runtime, args)
+            self.assertTrue(accepted.success)
+            assignment, = dispatch.call_args.args[0]
+            checked = coordinator._brief(assignment)
+            self.assertEqual((checked["profile"], checked["scope"]), ("researcher", ["marker.txt"]))
+            self.assertIn("empty-input behavior", checked["context"])
+            self.assertIn("recommend the repository's verification command", checked["deliverables"][0])
+            self.assertNotIn("task_id", checked)
+            self.assertFalse(execute(self.runtime, {**args, "assignments": [brief()]}).success)
+            dispatch.assert_called_once()
 
     def test_reviewer_receipt_arguments_match_structured_artifact_paths(self):
         from openkyrozen.agent.subagent_runtime import _receipt_argument

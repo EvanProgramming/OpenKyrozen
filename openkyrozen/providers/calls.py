@@ -138,20 +138,35 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                  if registry.get_spec(item["name"]).capability in allowed or item["name"] in history_names]
         current_names = {item["name"] for item in tools if item["name"] in requested_names
                          and registry.get_spec(item["name"]).capability in allowed}
-        from openkyrozen.agent.engine import _requests_one_delegation
+        from openkyrozen.agent.engine import _requests_one_delegation, _requests_one_test_review
         single_assignment = _requests_one_delegation(self.execution_context.native_control_input)
-        if single_assignment and "spawn_agents" in current_names:
+        test_review = single_assignment and _requests_one_test_review(self.execution_context.native_control_input)
+        if "spawn_agents" in current_names and registry.get_spec("spawn_agents").source == "builtin":
             declaration = next(item for item in tools if item["name"] == "spawn_agents")
-            assignments = declaration["parameters"]["properties"]["assignments"]
-            assignments["maxItems"] = 1
-            declaration["description"] += " Submit one focused assignment. Omit task_id for independent review findings."
-            task_ids = [task["id"] for task in self.tasks.tasks
-                        if self._valid_receipt_task_binding(self.current_session, task["id"])]
-            fields = assignments["items"]["properties"]
-            if task_ids:
-                fields["task_id"]["enum"] = task_ids
+            schema = declaration["parameters"]
+            custom_brief = schema["anyOf"][0]
+            assignments = custom_brief["properties"]["assignments"]
+            if test_review:
+                schema["anyOf"].reverse()
+                schema["properties"]["assignments"] = assignments
+                declaration["description"] = (
+                    'For the requested independent test review, use test_review with scope and focus. '
+                    'Use ["."] if the tests are not yet located. OpenKyrozen prepares the read-only brief. '
+                    'The main turn runs tests and records the result. '
+                    'Use assignments only when a custom specialist brief is necessary.'
+                )
             else:
-                fields.pop("task_id", None)
+                declaration["parameters"] = custom_brief
+            if single_assignment:
+                assignments["maxItems"] = 1
+                declaration["description"] += " Submit one focused assignment. Omit task_id for independent review findings."
+                task_ids = [task["id"] for task in self.tasks.tasks
+                            if self._valid_receipt_task_binding(self.current_session, task["id"])]
+                fields = assignments["items"]["properties"]
+                if task_ids:
+                    fields["task_id"]["enum"] = task_ids
+                else:
+                    fields.pop("task_id", None)
         ordinary_plan_edit = False
         ordinary_followup = False
         command_followup = False
@@ -233,6 +248,11 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                     + f"{add_command_guidance}Use add for other work. "
                     "In the same call, start the first task by its ref."
                 )
+                if test_review and can_add_read:
+                    plan_tool["description"] += (
+                        " For an independent test review, start with one complete read of a relevant file. "
+                        "Use native source inspection to locate tests and bind the actual verification command later."
+                    )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
                 alternatives = None
                 required = ["plan_id", "expected_revision", "operations"]
