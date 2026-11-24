@@ -947,17 +947,21 @@ class V3MatchedLiveTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             pid_file = Path(directory) / "pid"
-            code = ("import subprocess,sys,time; "
+            pid_temporary = pid_file.with_suffix(".tmp")
+            code = ("import os,subprocess,sys,time; from pathlib import Path; "
                     "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'],start_new_session=True); "
-                    f"open({str(pid_file)!r},'w').write(str(p.pid)); time.sleep(30)")
+                    f"Path({str(pid_temporary)!r}).write_text(str(p.pid)); "
+                    f"os.replace({str(pid_temporary)!r}, {str(pid_file)!r}); time.sleep(30)")
             parent = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
-            deadline = time.monotonic() + 5
-            while not pid_file.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertTrue(pid_file.exists())
-            descendant = int(pid_file.read_text())
-            _kill_process_tree(parent.pid)
-            parent.wait(timeout=5)
+            try:
+                deadline = time.monotonic() + 5
+                while not pid_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pid_file.exists())
+                descendant = int(pid_file.read_text())
+            finally:
+                _kill_process_tree(parent.pid)
+                parent.wait(timeout=5)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 try:
