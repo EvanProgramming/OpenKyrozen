@@ -64,7 +64,7 @@ Run `make docs-check` after changing a tool, endpoint, or MCP contract.
 | `search_memory` | `read` | `read_only` | false | Search stored memories for facts relevant to the query. Args: "query" | `query`: string; required: `query` |
 | `search_web` | `network` | `remote` | false | Search the internet for real-time information. | `query`: string; required: `query` |
 | `send_subagent` | `read` | `internal` | false | Reuse a finished sub-agent; args JSON contains run_id and a complete assignment. | `assignment`: object, `run_id`: string; required: `run_id`, `assignment` |
-| `spawn_agents` | `read` | `internal` | false | Start independent specialist assignments in parallel. | `assignments`: array; required: `assignments` |
+| `spawn_agents` | `read` | `internal` | false | Start independent specialist assignments in parallel. | `assignments`: array, `test_review`: object; requires either `assignments` or `test_review` |
 | `stop_process` | `shell` | `process` | false | Stop a process owned by the current actor, workspace, and session. | `process_id`: string; required: `process_id` |
 | `update_plan` | `write` | `internal` | false | Edit a revision-checked Working Plan. To create one, omit plan_id, set | `complexity`: string, `expected_revision`: integer, `operations`: array, `plan_id`: string, `reason`: string, `tasks`: array; requires either `operations` and `expected_revision` or `complexity` and `tasks` |
 | `wait_subagents` | `read` | `internal` | false | Wait for delegated work and its reviews. When the result is needed before continuing, use timeout 120. | `run_ids`: array, `timeout`: number |
