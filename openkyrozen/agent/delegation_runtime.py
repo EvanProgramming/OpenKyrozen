@@ -262,7 +262,7 @@ def _fresh_review_sources(runtime, child, paths, inventory_path):
             return []
         sources.append({"path": path, "receipt_id": receipt.receipt_id, "content": data["content"]})
     if inventory_path is not None:
-        receipt = runtime.execute(child, "list_tree", {"path": inventory_path}, operation_scope="subagent:reviewer")
+        receipt = runtime.execute(child, "list_tree", inventory_path, operation_scope="subagent:reviewer")
         if not receipt.authorized or not receipt.success or receipt.tool_source != "builtin":
             return []
         if (len(receipt.result) >= 2000

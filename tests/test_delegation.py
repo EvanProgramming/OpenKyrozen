@@ -614,11 +614,13 @@ class DelegationTests(unittest.TestCase):
                     availability = next(item["content"].removeprefix(marker).splitlines()[0] for item in messages
                                         if isinstance(item, dict) and item.get("content", "").startswith(marker))
                     review_requests.append(json.loads(availability)["current_call_tools"])
-                    if '"content": "ok"' not in review or '"content": "expected: ok\\n"' not in review:
+                    if ('"content": "ok"' not in review or '"content": "expected: ok\\n"' not in review
+                            or '"inventory":' not in review):
                         raise AssertionError("expected independently read source contents")
                 if not saw_reads and not review:
                     calls = tuple(ToolCall(f"source-{index}", "read_file", {"path": path})
                                   for index, path in enumerate(paths))
+                    calls += (ToolCall("inventory", "list_tree", {"path": "."}),)
                     return ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_REQUEST)
                 answer = ({"verdict": "verified", "summary": "The marker matches the expected value."}
                           if review else result())
@@ -635,7 +637,7 @@ class DelegationTests(unittest.TestCase):
         own_receipts = {item["receipt_id"] for item in verdict["tool_receipts"]}
         self.assertEqual({item["receipt_id"] for item in verdict["evidence"]}, own_receipts)
         self.assertTrue(own_receipts.isdisjoint(item["receipt_id"] for item in run["result"]["tool_records"]))
-        self.assertEqual([item["path"] for item in verdict["evidence"]], paths)
+        self.assertEqual([item["path"] for item in verdict["evidence"]], [*paths, "."])
         self.assertEqual(verdict["findings"], [])
 
     def test_focused_review_cannot_verify_unread_sources_or_model_receipt_ids(self):
