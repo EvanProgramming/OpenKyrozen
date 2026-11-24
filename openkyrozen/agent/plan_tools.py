@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import re
+
 from openkyrozen.tools.models import legacy_text_api, tool_failure, tool_success
+
+_EXPECTED_COMMAND_FAILURE = re.compile(
+    r"^\s*(?:the\s+)?(?:reproduction\s+)?command\s+(?:fails?\b|exits?\s+non[- ]?zero\b)", re.IGNORECASE,
+)
 
 
 def _control_error(self):
@@ -147,9 +153,9 @@ def _update_plan(self, arguments: dict):
                     if operation.get("op") != "update" or operation.get("task") != reproduction["id"]:
                         continue
                     fields = operation["fields"]
-                    if ((fields.get("execution") or {}).get("action") == "run_cmd"
-                            or any(isinstance(criterion, dict) and criterion["verification"]["action"] == "run_cmd"
-                                   for criterion in fields.get("acceptance", ()))):
+                    if any(isinstance(criterion, dict) and criterion["verification"]["action"] == "run_cmd"
+                           and _EXPECTED_COMMAND_FAILURE.match(criterion["criterion"])
+                           for criterion in fields.get("acceptance", ())):
                         raise ValueError(
                             "Bind the reproduction with bind_command_check and start the same task. "
                             "For a direct failing command, set expected_exit_code and run the exact command by itself"
