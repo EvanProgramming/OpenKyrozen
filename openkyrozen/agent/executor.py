@@ -842,6 +842,14 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         if (expected_spec.source == "builtin" and type(executor) is MethodType
                 and executor.__self__ is self and executor.__func__ is _discover_tools.__tool_result_executor__):
             task_id = task_plan_id = None
+    if (call_id_source == "native" and canonical == "read_tool_artifact" and expected_spec is not None
+            and expected_spec.source == "builtin" and isinstance(args, dict) and type(args.get("limit")) is int):
+        from openkyrozen.tools.manifest import typed_executor
+
+        if expected_spec.executor == typed_executor(self._read_tool_artifact):
+            maximum = expected_spec.input_schema["properties"]["limit"]["maximum"]
+            if args["limit"] > maximum:
+                args = {**args, "limit": maximum}
     def emit_rejected_call():
         self._publish_runtime_event(
             "tool.call", {"tool_name": canonical,

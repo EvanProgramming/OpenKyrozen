@@ -830,6 +830,7 @@ class NativeContextTests(unittest.TestCase):
         long_finding = "Detailed verified source evidence " * 550
         run = {"run_id": "review-1", "version": 7, "name": "Researcher", "status": "succeeded",
                "report": {"status": "completed", "summary": summary, "findings": [long_finding],
+                          "checks": [{"detail": "Run python -m unittest test_parser.py."}],
                           "evidence": ["receipt_123"], "uncertainties": []},
                "reviews": [{"verdict": "verified", "summary": "Read the original test."}]}
         artifact_id = None
@@ -842,6 +843,12 @@ class NativeContextTests(unittest.TestCase):
                 call = ToolCall("wait", "wait_subagents", {"run_ids": ["review-1"], "timeout": 120})
                 return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
                     continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
+            if len(provider.requests) == 3:
+                page = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "audit")
+                self.assertFalse(page.is_error, page.output)
+                self.assertEqual(page.output["data"]["limit"], 1000)
+                self.assertEqual(page.output["data"]["next_offset"], 1000)
+                return ModelResponse(text="The independent review confirmed the test requirement.", finish_reason=FinishReason.FINAL)
             self.assertEqual(len(provider.requests), 2)
             reply = next(item for item in messages if isinstance(item, ToolReply))
             data = reply.output["data"]
@@ -849,15 +856,18 @@ class NativeContextTests(unittest.TestCase):
             agent, = data["agents"]
             self.assertEqual((agent["run_id"], agent["version"], agent["status"]), ("review-1", 7, "succeeded"))
             self.assertEqual(agent["report"]["summary"], summary)
+            self.assertEqual(agent["report"]["checks"], ["Run python -m unittest test_parser.py."])
             self.assertEqual(agent["review"]["verdict"], "verified")
             artifact_id = data["artifact_id"]
-            return ModelResponse(text="The independent review confirmed the test requirement.", finish_reason=FinishReason.FINAL)
+            call = ToolCall("audit", "read_tool_artifact", {"artifact_id": artifact_id, "offset": 0, "limit": 6000})
+            return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
+                continuation=provider_continuation(provider, model, "fixture", {"call": call.id}))
 
         provider = self.provider(respond)
         with patch.object(coordinator, "list", return_value=[run]), patch.object(coordinator, "wait", return_value=[run]):
             answer, turn, _ = self.run_native(provider, [{"role": "user", "content": "Collect the independent review."}],
-                                              permitted={"wait_subagents"})
-        self.assertEqual(len(provider.requests), 2)
+                                              permitted={"wait_subagents", "read_tool_artifact"})
+        self.assertEqual(len(provider.requests), 3)
         self.assertEqual(turn.observed_delegation_versions, {"review-1": 7})
         self.assertEqual(answer, "The independent review confirmed the test requirement.")
         memory = runtime.memory_bank

@@ -212,6 +212,9 @@ def _wait_result_preview(agents):
             item["report"] = {
                 "status": report.get("status"),
                 "summary": report.get("summary", "")[:min(1800, share // 2)],
+                "checks": [str(check.get("detail") or check.get("criterion") or "")[:min(300, share // 6)]
+                           if isinstance(check, dict) else str(check)[:min(300, share // 6)]
+                           for check in report.get("checks", [])[:2]],
                 "uncertainties": [str(note)[:min(180, share // 8)]
                                   for note in report.get("uncertainties", [])[:2]],
             }

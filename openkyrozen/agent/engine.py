@@ -668,10 +668,17 @@ class AgentEngine:
                 if (receipt.action == "wait_subagents" and receipt.success
                         and getattr(receipt, "authorized", False) and getattr(receipt, "tool_source", None) == "builtin"):
                     data = reply_data["data"]
-                    for run in data.get("agents", ()) if isinstance(data, dict) else ():
+                    agents = data.get("agents", ()) if isinstance(data, dict) else ()
+                    for run in agents:
                         if (run.get("status") == "succeeded" and isinstance(run.get("run_id"), str)
                                 and type(run.get("version")) is int and run.get("report")):
                             turn.observed_delegation_versions[run["run_id"]] = run["version"]
+                    if (agents and len(agents) == data.get("agent_count", len(agents))
+                            and all(run.get("status") == "succeeded" for run in agents)):
+                        reply_data["next_request"] = (
+                            "Use the inline verified summaries and checks to continue the planned work. "
+                            "Open the audit only when a required detail is missing."
+                        )
                 if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
                 if selected_task_id and (record.get("success") or record.get("expected_exit_verified")):
@@ -773,6 +780,14 @@ class AgentEngine:
             if turn.pending_interaction_reply:
                 final_text = turn.pending_interaction_reply
                 break
+            if (calls[-1]["action"] == "run_cmd" and turn.observed_delegation_versions
+                    and _requests_one_delegation(turn.user_input)):
+                from openkyrozen.agent.completion import _verified_delegated_edit_result
+
+                completed_edit = _verified_delegated_edit_result(runtime, turn)
+                if completed_edit is not None:
+                    final_text = completed_edit
+                    break
             if (any(call["action"] in _NATIVE_CONTROLS for call in calls)
                     and not turn.tool_records[-1].get("success")):
                 control_failures += 1

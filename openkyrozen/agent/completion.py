@@ -125,6 +125,57 @@ def _working_plan_edit_retried(manager, record, later_records):
     return False
 
 
+def _verified_delegated_edit_result(runtime, turn):
+    """Finish a reviewed edit from its scoped mutation and final check receipts."""
+    interaction = runtime._interaction_controller.state()
+    if any(interaction.get(key) for key in ("executing_plan", "pending_plan", "pending_question")):
+        return None
+    plan = runtime.tasks.working_plan
+    command = turn.tool_records[-1]
+    if (plan is None or plan.status != "completed" or turn.protocol_error_message
+            or command.get("success") is not True or command.get("authorized") is not True
+            or command.get("call_id_source") != "native" or command.get("plan_id") != plan.id
+            or command.get("task_id") not in plan.task_ids
+            or command.get("verification") != {"method": "command_exit_status", "status": "verified",
+                                               "observed": {"exit_code": 0}}):
+        return None
+    tasks = [task for task in runtime.tasks.tasks if task["id"] in plan.task_ids]
+    if (len(tasks) != len(plan.task_ids)
+            or any(task["status"] not in {"succeeded", "cancelled"}
+                   or task["status"] == "succeeded" and not TaskManager._task_has_evidence(task) for task in tasks)):
+        return None
+    coordinator = runtime.subagent_manager.coordinator
+    if coordinator is None:
+        return None
+    from openkyrozen.agent.delegation import TERMINAL
+
+    prior = getattr(turn, "agent_versions", {})
+    runs = [run for run in coordinator.list()
+            if run["status"] not in TERMINAL or run["version"] != prior.get(run["run_id"])]
+    if not runs or any(run["status"] != "succeeded" or not run.get("reviews")
+                       or run["reviews"][-1]["verdict"] != "verified"
+                       or turn.observed_delegation_versions.get(run["run_id"]) != run["version"] for run in runs):
+        return None
+    edits = [record for record in turn.tool_records[:-1]
+             if record["action"] in {"write_file", "edit_file", "apply_patch"}]
+    if not edits or any(record.get("success") is not True or record.get("authorized") is not True
+                        or record.get("call_id_source") != "native" or record.get("plan_id") != plan.id
+                        or (record.get("requested_task_id") or record.get("task_id")) != command["task_id"]
+                        or (record.get("verification") or {}).get("file_content_changed") is not True
+                        for record in edits):
+        return None
+    try:
+        paths = list(dict.fromkeys(json.loads(record["args"])["path"] for record in edits))
+        invocation = json.loads(command["args"])["command"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not isinstance(invocation, str) or not invocation or any(not isinstance(path, str) or not path for path in paths):
+        return None
+    files = ", ".join(f"`{path}`" for path in paths)
+    summaries = "\n".join(run["report"]["summary"] for run in runs)
+    return f"Updated {files}. The verification command `{invocation}` passed with exit code 0.\n\nIndependent review\n\n{summaries}"
+
+
 def _complete_turn(self, turn):
     from openkyrozen.agent.delegation import TERMINAL
     coordinator = self.subagent_manager.coordinator
