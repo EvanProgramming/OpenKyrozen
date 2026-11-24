@@ -557,6 +557,7 @@ class DelegationTests(unittest.TestCase):
 
             def chat_response(self, messages, model=None, *, tools=None):
                 if not any(isinstance(item, ToolReply) for item in messages):
+                    assert not {"list_dir", "list_tree", "find_files"} & {item["name"] for item in tools}
                     return ModelResponse(tool_calls=(ToolCall("native-read", "read_file", {"path": "marker.txt"}),),
                                          finish_reason=FinishReason.TOOL_REQUEST)
                 review = any(isinstance(item, dict) and "Independently verify" in str(item.get("content", ""))

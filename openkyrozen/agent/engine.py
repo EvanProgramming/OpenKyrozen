@@ -690,6 +690,24 @@ class AgentEngine:
                                     "The command produced the expected nonzero exit status. The task is verified. "
                                     "Use the pinned Working Plan to start the next pending task if work remains."
                                 )
+                                command_args = {criterion["args"] for criterion in selected["acceptance"]
+                                                if isinstance(criterion, dict) and criterion.get("action") == "run_cmd"
+                                                and (criterion.get("expect") or {}).get("exit_code")}
+                                checks = [task for task in runtime.tasks.tasks
+                                          if task["id"] in current_plan.task_ids and task["status"] == "pending"
+                                          and any(isinstance(criterion, dict) and criterion.get("action") == "run_cmd"
+                                                  and criterion.get("args") in command_args
+                                                  and (criterion.get("expect") or {}).get("exit_code", 0) == 0
+                                                  for criterion in task["acceptance"])]
+                                if len(checks) == 1 and runtime.tasks.active_working_task(checks[0]["id"]):
+                                    reply_data["next_working_plan_task"] = {
+                                        "plan_id": current_plan.id, "expected_revision": current_plan.revision,
+                                        "operations": [{"op": "start", "task": checks[0]["id"]}],
+                                    }
+                                    reply_data["next_request"] = (
+                                        "The reproduction is verified. Use next_working_plan_task to select the existing "
+                                        "post-change command check before editing. A read-only check cannot authorize an edit."
+                                    )
                         elif (call["action"] == "run_cmd" and (record.get("verification") or {}).get("status") == "verified"
                               and selected and selected["status"] == "running"
                               and not (selected.get("checkpoint") or {}).get("strategic_plan")

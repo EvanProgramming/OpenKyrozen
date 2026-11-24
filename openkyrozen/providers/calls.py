@@ -142,8 +142,16 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
         single_assignment = _requests_one_delegation(self.execution_context.native_control_input)
         if single_assignment and "spawn_agents" in current_names:
             declaration = next(item for item in tools if item["name"] == "spawn_agents")
-            declaration["parameters"]["properties"]["assignments"]["maxItems"] = 1
-            declaration["description"] += " This request calls for one focused assignment."
+            assignments = declaration["parameters"]["properties"]["assignments"]
+            assignments["maxItems"] = 1
+            declaration["description"] += " Submit one focused assignment. Omit task_id for independent review findings."
+            task_ids = [task["id"] for task in self.tasks.tasks
+                        if self._valid_receipt_task_binding(self.current_session, task["id"])]
+            fields = assignments["items"]["properties"]
+            if task_ids:
+                fields["task_id"]["enum"] = task_ids
+            else:
+                fields.pop("task_id", None)
         ordinary_plan_edit = False
         ordinary_followup = False
         command_followup = False

@@ -333,6 +333,9 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
     if review or self._active_interaction_mode.get() in {"ask", "plan"}:
         capabilities &= resolve_capabilities("readonly")
     tools = (allowed_tool_names(adapters.AVAILABLE_TOOLS, ",".join(capabilities)) - set(TOOLS)) if not report_repair else set()
+    inventory_allowed = any((coordinator.root / path).is_dir() for path in brief["scope"])
+    if not inventory_allowed:
+        tools -= {"list_dir", "list_tree", "find_files"}
     if not report_repair and "read" in capabilities:
         with self.use_session(child):
             artifact_spec = self.tool_registry.get_spec("read_tool_artifact")
@@ -423,8 +426,8 @@ def _invoke_delegated(self, run, *, review, feedback, coordinator, report_repair
         f"You are the {role} sub-agent. {profile.system_prompt}\n\n"
         + task + "\n\n"
         + ("For this read-only assignment, start by reading explicitly named files in one batch. "
-           "Include one inventory of the assigned directory in that batch if needed. "
-           "Use tools to gather assignment evidence, without tool health checks. "
+           + ("Include one inventory of the assigned directory in that batch if needed. " if inventory_allowed else "")
+           + "Use tools to gather assignment evidence, without tool health checks. "
            "Stop when the acceptance is checked. Include the substantive conclusion, exact references, "
            "and any recommended verification command in the concise summary. The parent executes tests. "
            "Use Git tools only when the assignment calls for Git evidence. Cite each receipt once in evidence.\n\n"

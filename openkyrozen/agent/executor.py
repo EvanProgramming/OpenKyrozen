@@ -792,7 +792,7 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     started_at = utc_now()
     call_id = call_id or f"synthetic_{uuid.uuid4().hex}"
     expected_spec = self.tool_registry.specs.get(canonical)
-    if (native_plan_start is not None and native_plan_start is self.tasks.working_plan
+    if (native_plan_start is self.tasks.working_plan
             and call_id_source == "native" and canonical == "update_plan" and expected_spec is not None
             and expected_spec.source == "builtin" and isinstance(args, dict)):
         from openkyrozen.agent.plan_tools import _update_plan
@@ -800,7 +800,19 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
         executor = expected_spec.executor
         if (type(executor) is MethodType and executor.__self__ is self
                 and executor.__func__ is _update_plan.__tool_result_executor__):
-            if set(args) == {"description", "command"}:
+            if native_plan_start is None:
+                from openkyrozen.agent.engine import _requests_one_delegation
+
+                operations = args.get("operations")
+                if (set(args) == {"expected_revision", "operations"} and type(args["expected_revision"]) is int
+                        and args["expected_revision"] == 0 and isinstance(operations, list) and len(operations) == 1
+                        and isinstance(operation := operations[0], dict) and operation.get("op") == "add_read_check"
+                        and isinstance(operation.get("ref"), str) and not self.execution_context.child_run_id
+                        and self._active_interaction_mode.get() == "agent"
+                        and _requests_one_delegation(self.execution_context.native_control_input)):
+                    # A single native read-check declaration for a requested review selects only that read.
+                    args = {**args, "operations": [operation, {"op": "start", "task": operation["ref"]}]}
+            elif set(args) == {"description", "command"}:
                 from openkyrozen.agent.engine import _can_start_command_followup
 
                 predecessor = self.execution_context.native_completed_predecessor
@@ -813,9 +825,11 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
             elif (native_plan_start.status == "active"
                     and set(args) == {"expected_revision", "operations"} and type(args["expected_revision"]) is int
                     and args["expected_revision"] == native_plan_start.revision
-                    and isinstance(operations := args["operations"], list) and len(operations) == 1
+                    and isinstance(operations := args["operations"], list) and operations
                     and isinstance(operation := operations[0], dict) and set(operation) == {"op", "task"}
-                    and operation["op"] == "start" and operation["task"] in native_plan_start.task_ids):
+                    and operation["op"] == "start" and operation["task"] in native_plan_start.task_ids
+                    and all(isinstance(item, dict) and item.get("op") in {"add_read_check", "add_command_check"}
+                            for item in operations[1:])):
                 # The exact task and revision identify the ordinary plan after an omitted ID.
                 interaction = self._interaction_controller.state()
                 if (not interaction.get("executing_plan") and not interaction.get("pending_plan")

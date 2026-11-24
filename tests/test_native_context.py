@@ -345,6 +345,8 @@ class NativeContextTests(unittest.TestCase):
                 self.assertIsNone(self.runtime.tasks.execution_task_id)
                 arguments = {"expected_revision": plan.revision + (step == 2), "operations": [
                     {"op": "start", "task": "foreign-task" if step == 3 else plan.task_ids[0]}]}
+                if step == 4:
+                    arguments["operations"].append({"op": "add_read_check", "ref": "extra", "path": "extra.txt"})
                 call = ToolCall(f"start-{step}", "update_plan", arguments)
             elif step == 5:
                 reply = next(item for item in messages if isinstance(item, ToolReply) and item.call_id == "start-4")
@@ -352,7 +354,14 @@ class NativeContextTests(unittest.TestCase):
                 prior = next(item for item in messages if isinstance(item, ModelResponse)
                              and any(call.id == "start-4" for call in item.tool_calls))
                 self.assertNotIn("plan_id", prior.tool_calls[0].arguments)
+                self.assertEqual(self.runtime.tasks.tasks[1]["status"], "pending")
                 call = ToolCall("read", "read_file", {"path": "notes.txt"})
+            elif step == 6:
+                plan = self.runtime.tasks.working_plan
+                call = ToolCall("cancel-extra", "update_plan", {
+                    "plan_id": plan.id, "expected_revision": plan.revision,
+                    "operations": [{"op": "cancel", "task": plan.task_ids[1]}],
+                })
             else:
                 return ModelResponse(text="The file contains ready.", finish_reason=FinishReason.FINAL)
             return ModelResponse(tool_calls=(call,), finish_reason=FinishReason.TOOL_REQUEST,
@@ -364,7 +373,7 @@ class NativeContextTests(unittest.TestCase):
             complexity="complex", permitted=self.runtime._permitted_tool_names())
         self.assertIn("The file contains ready.", answer)
         self.assertFalse(turn.protocol_error_message)
-        self.assertEqual(len(provider.requests), 6)
+        self.assertEqual(len(provider.requests), 7)
         self.assertEqual(self.runtime.tasks.tasks[0]["status"], "succeeded")
 
     def test_responses_completed_plan_command_form_preserves_scope_and_creates_a_bound_check(self):
@@ -871,11 +880,14 @@ class NativeContextTests(unittest.TestCase):
             if step == 1:
                 call = ToolCall("plan", "update_plan", {"expected_revision": 0, "operations": [
                     {"op": "add_read_check", "ref": "inspect", "path": "notes.txt"},
-                    {"op": "start", "task": "inspect"},
                 ]})
             elif step in (2, 3):
                 spec = next(item for item in provider.tool_requests[-1] if item["name"] == "spawn_agents")
-                self.assertEqual(spec["parameters"]["properties"]["assignments"]["maxItems"], 1)
+                assignments = spec["parameters"]["properties"]["assignments"]
+                self.assertEqual(assignments["maxItems"], 1)
+                selected = self.runtime.tasks.execution_task_id
+                self.assertIsNotNone(selected)
+                self.assertEqual(assignments["items"]["properties"]["task_id"]["enum"], [selected])
                 if step == 2:
                     call = ToolCall("too-many", "spawn_agents", {"assignments": [broad, duplicate]})
                 else:
