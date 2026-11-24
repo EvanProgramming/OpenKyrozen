@@ -963,6 +963,9 @@ def _worker_env(base: Path, fixture: dict, relay: ResponsesRelay) -> dict[str, s
                KYROZEN_BENCHMARK_API_KEY=relay.client_key,
                KYROZEN_SANDBOX_REQUIRED=os.environ.get("KYROZEN_SANDBOX_REQUIRED", "0"),
                PYTHONDONTWRITEBYTECODE="1", PYTHONPATH="")
+    timeout = getattr(relay, "worker_timeout_seconds", None)
+    if timeout is not None:
+        env["KYROZEN_PROVIDER_TIMEOUT_SECONDS"] = str(timeout)
     return env
 
 

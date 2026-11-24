@@ -904,6 +904,54 @@ class DeepSeekRelayTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 self._assert_formal_responses_smoke(DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG, connect_error=error)
 
+    def test_low_transport_preserves_header_timeout_after_worker_disconnect(self):
+        import httpx
+        from unittest.mock import patch
+
+        from benchmarks import v3_deepseek as deepseek
+        from benchmarks.v3_matched_live import _worker_env
+        from benchmarks.v3_responses_relay import ResponsesRelay, UPSTREAM_STREAM_SECONDS
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            ledger = v3_matched.BudgetLedger(base / "budget.sqlite", limit_rmb="15",
+                                            pricing=deepseek.DEEPSEEK_PRICING)
+            relay = ResponsesRelay(endpoint=deepseek.DEEPSEEK_ENDPOINT, api_key="offline", budget=ledger,
+                                   config=deepseek.DEEPSEEK_LOW_RESPONSES_RELAY_CONFIG)
+            env = _worker_env(base, {"capabilities": ["read"]}, relay)
+            self.assertGreater(int(env["KYROZEN_PROVIDER_TIMEOUT_SECONDS"]), UPSTREAM_STREAM_SECONDS)
+            handler = relay._server.RequestHandlerClass
+            send_json = handler._json
+
+            def disconnect_on_error(request, status, data):
+                if status == 502:
+                    raise BrokenPipeError("fixture worker disconnected")
+                return send_json(request, status, data)
+
+            relay.start()
+            try:
+                with patch.object(relay._stream_upstream_session, "send",
+                                  side_effect=httpx.ReadTimeout("fixture upstream did not send headers")) as send, \
+                     patch.object(handler, "_json", disconnect_on_error):
+                    headers = {"Authorization": f"Bearer {relay.client_key}"}
+                    payload = {"input": "fixture", "stream": True}
+                    with self.assertRaises(requests.ConnectionError):
+                        requests.post(relay.url + "/responses", headers=headers, json=payload, timeout=5)
+                    response = requests.post(relay.url + "/responses", headers=headers, json=payload, timeout=5)
+                    self.assertEqual(response.status_code, 503)
+                    send.assert_called_once()
+                row, = relay.rows
+                self.assertEqual(row["transport_error"], "ReadTimeout")
+                self.assertEqual(row["transport_failure_phase"], "before_response_headers")
+                self.assertEqual(row["downstream_transport_error"], "BrokenPipeError")
+                self.assertEqual(relay.provider_error, "upstream_transport_ReadTimeout")
+                call, = ledger.campaign_calls()
+                self.assertEqual(call["status"], "unknown")
+                self.assertIsNone(call["usage"])
+                self.assertEqual(call["reserved_rmb"], "2.032768")
+            finally:
+                relay.close()
+
     def _assert_formal_responses_smoke(self, config, *, reported_effort=None, connect_error=None):
         from benchmarks import v3_deepseek as deepseek
         from benchmarks.v3_responses_relay import ResponsesRelay

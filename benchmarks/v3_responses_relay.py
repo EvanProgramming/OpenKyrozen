@@ -167,11 +167,15 @@ class ResponsesRelay:
             raise ValueError("fixed DeepSeek protocol requires the pinned endpoint")
         self._upstream_session = None
         self._stream_upstream_session = None
+        self.worker_timeout_seconds = None
         if (self.endpoint == "https://api.deepseek.com" and
                 (config.reasoning_effort == "low" or getattr(responses_policy, "reasoning_effort", None) == "low")):
             self._upstream_session = _http2_client(keepalive=1)
             # Closing after native terminal usage can precede HTTP/2 END_STREAM.
             self._stream_upstream_session = _http2_client(keepalive=0)
+            # Allow the relay's upstream wait and connection retry before the local
+            # worker gives up waiting for the provider result.
+            self.worker_timeout_seconds = UPSTREAM_STREAM_SECONDS + 2 * UPSTREAM_CONNECT_SECONDS + 10
         self.upstream_route = "/beta/chat/completions" if config.strict_chat else "/responses"
         if config.strict_chat:
             self.protocol = "strict-chat"
@@ -698,16 +702,18 @@ class ResponsesRelay:
                     if isinstance(exc, _UPSTREAM_ERRORS):
                         with relay._upstream_lock:
                             relay.provider_error = f"upstream_transport_{type(exc).__name__}"
-                    if row["status"] == "unknown":
-                        relay.budget.settle(attempt_id, None)
-                        row["transport_error"] = type(exc).__name__
-                        if relay._upstream_session is not None and "http_status" in row:
-                            row["transport_failure_phase"] = "reading_response_body"
-                    if not stream_started:
-                        try:
-                            self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
-                        except (OSError, BrokenPipeError):
-                            pass
+                        if reserved and row["status"] == "unknown":
+                            relay.budget.settle(attempt_id, None)
+                            row["transport_error"] = type(exc).__name__
+                            if relay._upstream_session is not None and "http_status" in row:
+                                row["transport_failure_phase"] = "reading_response_body"
+                        if not stream_started:
+                            try:
+                                self._json(502, {"error": {"message": "benchmark upstream transport failed"}})
+                            except OSError as downstream_error:
+                                row["downstream_transport_error"] = type(downstream_error).__name__
+                    elif reserved:
+                        row["downstream_transport_error"] = type(exc).__name__
                 finally:
                     if reserved and row["status"] == "unknown":
                         wire = row.get("upstream_wire")
