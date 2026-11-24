@@ -795,7 +795,7 @@ class Delegation:
                 if event["payload"].get("run_id") == run_id]
             return {**self._safe(self.runs[run_id]), "messages": messages, "review_messages": review_messages, "receipts": receipts}
 
-    def wait(self, run_ids=None, timeout=30):
+    def wait(self, run_ids=None, timeout=30, *, cancelled=None):
         deadline = time.monotonic() + max(0, min(float(timeout), 120))
         with self.changed:
             selected = list(self.runs) if run_ids is None else run_ids
@@ -805,9 +805,9 @@ class Delegation:
                       (self.runs[key]["status"] != "cancelled" and key in self.futures and not self.futures[key].done())
                       for key in selected):
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                if remaining <= 0 or (cancelled is not None and cancelled.is_set()):
                     break
-                self.changed.wait(remaining)
+                self.changed.wait(min(0.25, remaining) if cancelled is not None else remaining)
             return copy.deepcopy([self.runs[key] for key in selected])
 
     def cancel(self, run_id):

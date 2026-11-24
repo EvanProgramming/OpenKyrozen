@@ -824,16 +824,12 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
                     args = {"plan_id": native_plan_start.id, "expected_revision": native_plan_start.revision,
                             "operations": [{"op": "bind_command_check", "task": task["id"], **args},
                                            {"op": "start", "task": task["id"]}]}
-            elif set(args) == {"description", "command"}:
-                from openkyrozen.agent.engine import _can_start_command_followup
+            elif (predecessor := self.execution_context.native_completed_predecessor) is not None:
+                from openkyrozen.agent.engine import _can_start_command_followup, _completed_command_followup
 
-                predecessor = self.execution_context.native_completed_predecessor
-                if (predecessor is not None and predecessor[:2] == (native_plan_start.id, native_plan_start.revision)
+                if (predecessor[:2] == (native_plan_start.id, native_plan_start.revision)
                         and _can_start_command_followup(self, native_plan_start)):
-                    args = {"expected_revision": 0, "operations": [
-                        {"op": "add_command_check", "ref": "followup", **args},
-                        {"op": "start", "task": "followup"},
-                    ]}
+                    args = _completed_command_followup(args, native_plan_start) or args
             elif (native_plan_start.status == "active"
                     and set(args) == {"expected_revision", "operations"} and type(args["expected_revision"]) is int
                     and args["expected_revision"] == native_plan_start.revision

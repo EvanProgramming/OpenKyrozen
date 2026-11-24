@@ -152,6 +152,7 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                 declaration["description"] = (
                     'For the requested independent test review, use test_review with scope and focus. '
                     'Use ["."] if the tests are not yet located. OpenKyrozen prepares the read-only brief. '
+                    'The call collects reviewed findings when ready. Use them to choose the test command. '
                     'The main turn runs tests and records the result. '
                     'Use assignments only when a custom specialist brief is necessary.'
                 )
@@ -251,7 +252,8 @@ def _get_model_response(self, messages: list[dict], model: str | None = None, *,
                 if test_review and can_add_read:
                     plan_tool["description"] += (
                         " For an independent test review, start with one complete read of a relevant file. "
-                        "Use native source inspection to locate tests and bind the actual verification command later."
+                        "Use add_read_check and start its ref in the same call. The delegated review can locate tests. "
+                        "Bind the actual verification command after reading its findings."
                     )
             elif _native_tool_phase in {"plan_active", "plan_completed"}:
                 alternatives = None

@@ -441,15 +441,16 @@ class NativeContextTests(unittest.TestCase):
         command = f"{shlex.quote(sys.executable)} -c 'print(42)'"
         start = {"description": "Verify the output", "command": command}
         (self.root / "notes.txt").write_text("ready\n", encoding="utf-8")
-        for case in ("permitted", "fallback", "shell denied", "mixed arguments", "stale plan",
-                     "durable stale plan", "interaction changed"):
+        for case in ("permitted", "fallback", "completed predecessor", "stale predecessor revision",
+                     "shell denied", "mixed arguments", "stale plan", "durable stale plan", "interaction changed"):
             with self.subTest(case=case):
                 self.runtime.tasks.clear()
                 inspected_plan = pending_patch = None
-                allowed = case in {"permitted", "fallback"}
+                original_arguments = start
+                allowed = case in {"permitted", "fallback", "completed predecessor"}
 
                 def respond(provider, messages, model):
-                    nonlocal inspected_plan, pending_patch
+                    nonlocal inspected_plan, original_arguments, pending_patch
                     step = len(provider.requests)
                     if step == 1:
                         call = ToolCall("inspect-plan", "update_plan", {"expected_revision": 0, "operations": [
@@ -503,8 +504,16 @@ class NativeContextTests(unittest.TestCase):
                                                          side_effect=with_new_approval)
                             pending_patch.start()
                             self.addCleanup(pending_patch.stop)
-                        arguments = {**start, "expected_revision": 0} if case == "mixed arguments" else start
-                        call = ToolCall("follow-up", "update_plan", arguments)
+                        if case in {"completed predecessor", "stale predecessor revision"}:
+                            original_arguments = {"plan_id": plan.id, "expected_revision": (
+                                plan.revision if case == "completed predecessor" else plan.revision - 1),
+                                "operations": [
+                                    {"op": "add_command_check", "ref": "followup", **start},
+                                    {"op": "start", "task": "followup"},
+                                ]}
+                        elif case == "mixed arguments":
+                            original_arguments = {**start, "expected_revision": 0}
+                        call = ToolCall("follow-up", "update_plan", original_arguments)
                     elif step == 4:
                         reply = next(item for item in messages if isinstance(item, ToolReply)
                                      and item.call_id == "follow-up")
@@ -518,7 +527,7 @@ class NativeContextTests(unittest.TestCase):
                             return ModelResponse(text="The inspection is complete.", finish_reason=FinishReason.FINAL)
                         original = next(item for item in messages if isinstance(item, ModelResponse)
                                         and any(call.id == "follow-up" for call in item.tool_calls))
-                        self.assertEqual(original.tool_calls[0].arguments, start)
+                        self.assertEqual(original.tool_calls[0].arguments, original_arguments)
                         self.assertNotEqual(self.runtime.tasks.working_plan.id, inspected_plan)
                         call = ToolCall("verify", "run_cmd", {"command": command})
                     else:

@@ -107,6 +107,28 @@ def _can_start_command_followup(runtime, plan):
             and "run_cmd" in _followup_workspace_tools(runtime))
 
 
+def _completed_command_followup(arguments, plan):
+    """Convert a command-only follow-up into a new plan without editing its predecessor."""
+    if set(arguments) == {"description", "command"}:
+        return {"expected_revision": 0, "operations": [
+            {"op": "add_command_check", "ref": "followup", **arguments},
+            {"op": "start", "task": "followup"},
+        ]}
+    if (set(arguments) != {"plan_id", "expected_revision", "operations"}
+            or arguments["plan_id"] != plan.id
+            or type(arguments["expected_revision"]) is not int
+            or arguments["expected_revision"] != plan.revision):
+        return None
+    operations = arguments["operations"]
+    if not isinstance(operations, list) or len(operations) != 2:
+        return None
+    add, start = operations
+    if (isinstance(add, dict) and add.get("op") == "add_command_check"
+            and isinstance(add.get("ref"), str) and start == {"op": "start", "task": add["ref"]}):
+        return {"expected_revision": 0, "operations": operations}
+    return None
+
+
 class AgentEngine:
     """Own the foreground turn lifecycle and select native or legacy transport."""
 
@@ -703,10 +725,21 @@ class AgentEngine:
                             "runner": "unittest", "command": command,
                             "use": "This file imports unittest. Use this command if the project has no configured test runner.",
                         }
-                if (receipt.action == "wait_subagents" and receipt.success
+                test_review = (receipt.action == "spawn_agents" and set(call["args"]) == {"test_review"}
+                               and "wait_subagents" in runtime._permitted_tool_names())
+                if ((receipt.action == "wait_subagents" or test_review) and receipt.success
                         and getattr(receipt, "authorized", False) and getattr(receipt, "tool_source", None) == "builtin"):
                     data = reply_data["data"]
                     agents = data.get("agents", ()) if isinstance(data, dict) else ()
+                    if (test_review and isinstance(agents, list) and len(agents) == 1
+                            and isinstance(agents[0], dict) and isinstance(run_id := agents[0].get("run_id"), str)):
+                        from openkyrozen.agent.delegation_runtime import _wait_result_preview
+
+                        # The spawn receipt has released its workspace access guard.
+                        coordinator = runtime.delegation()
+                        runs = coordinator.wait([run_id], 120, cancelled=cancelled)
+                        agents = _wait_result_preview([coordinator.summary(run, results=True) for run in runs])
+                        reply_data["data"] = data = {**data, "reviewed_agents": agents}
                     for run in agents:
                         if (run.get("status") == "succeeded" and isinstance(run.get("run_id"), str)
                                 and type(run.get("version")) is int and run.get("report")):
@@ -717,6 +750,11 @@ class AgentEngine:
                             "Use the inline verified summaries and checks to continue the planned work. "
                             "Open the audit only when a required detail is missing."
                         )
+                        if test_review:
+                            reply_data["next_request"] += (
+                                " Reuse the test findings and recommended command in reviewed_agents. "
+                                "Read the source you will edit and run any required verification in the main turn."
+                            )
                 if getattr(runtime.execution_context, "child_run_id", None) and receipt.success:
                     reply_data["metadata"]["receipt_id"] = receipt.receipt_id
                 if selected_task_id and (record.get("success") or record.get("expected_exit_verified")):
@@ -815,7 +853,7 @@ class AgentEngine:
             context.native_plan_active = native_tool_phase == "plan_active"
             context.native_plan_completed = completed_plan
             if (command_protocol and len(calls) == 1 and calls[0]["action"] == "update_plan"
-                    and set(calls[0]["args"]) == {"description", "command"}):
+                    and _completed_command_followup(calls[0]["args"], plan) is not None):
                 manager = runtime.tasks
                 event_id = manager.store.current_interaction_event_id(
                     user_id=manager.user_id, workspace_id=manager.workspace_id, session_id=manager.session_id)
