@@ -612,6 +612,67 @@ class StreamEventContractTests(unittest.TestCase):
                 self.assertEqual(continued[-2]["arguments"], arguments)
                 self.assertEqual(continued[-1]["call_id"], "call-1")
 
+    def test_responses_stream_accepts_one_redundant_closing_brace_only_with_schema_and_copy_agreement(self):
+        import json
+
+        from openkyrozen.providers.config import ProviderConfig
+        from openkyrozen.providers.openai import OpenAIResponsesProvider
+        from openkyrozen.tools.catalog import builtin_metadata
+
+        tool = {"name": "update_plan", "description": "Edit the active plan",
+                "parameters": builtin_metadata("update_plan")["input_schema"]}
+        arguments = {"expected_revision": 0, "operations": [{"op": "add", "ref": "verify", "task": {
+            "description": "Verify the implementation", "acceptance": ["Run the original tests"], "execution": None,
+        }}]}
+        valid = json.dumps(arguments)
+        mismatched = valid.replace('"execution": null', '"execution": "run tests"') + "}"
+        extra = valid + "}"
+        for terminal, done, deltas, complete, should_accept in (
+            (extra, extra, extra, extra, True),
+            (extra + "}", extra + "}", extra + "}", extra + "}", False),
+            (valid + "]", valid + "]", valid + "]", valid + "]", False),
+            (extra, extra, "", extra, False),
+            (extra, extra, extra, mismatched, False),
+            (extra, '{"expected_revision":2}}', '{"expected_revision":2}}', '{"expected_revision":2}}', False),
+            *[(bad, bad, bad, bad, False) for bad in (
+                mismatched, '{"expected_revision":1,"expected_revision":1}}',
+                '{"expected_revision":1} {"expected_revision":2}', '{}' + "}",
+            )],
+        ):
+            with self.subTest(terminal=terminal, done=done, deltas=deltas, complete=complete):
+                item = SimpleNamespace(type="function_call", name=tool["name"], id="fc-1",
+                    call_id="call-1", status="completed", arguments=terminal)
+                response = SimpleNamespace(id="resp", model="m", status="completed", output_text="",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=2, output_tokens_details=None),
+                    incomplete_details=None, output=[item])
+                events = [
+                    SimpleNamespace(type="response.output_item.added", output_index=0,
+                        item=SimpleNamespace(**{**vars(item), "arguments": ""})),
+                    SimpleNamespace(type="response.function_call_arguments.delta", output_index=0,
+                        item_id=item.id, delta=deltas),
+                    SimpleNamespace(type="response.function_call_arguments.done", output_index=0,
+                        item_id=item.id, name=item.name, arguments=done),
+                    SimpleNamespace(type="response.output_item.done", output_index=0,
+                        item=SimpleNamespace(**{**vars(item), "arguments": complete})),
+                    SimpleNamespace(type="response.completed", response=response),
+                ]
+                provider = OpenAIResponsesProvider.__new__(OpenAIResponsesProvider)
+                provider.config = ProviderConfig(provider="openai", model_simple="m")
+                provider._continuation_id = "responses-brace"
+                create = Mock(return_value=iter(events))
+                provider._client = SimpleNamespace(responses=SimpleNamespace(create=create))
+                with patch("openkyrozen.providers.usage._track_cost"):
+                    result = list(get_model_events(provider, [{"role": "user", "content": "go"}],
+                                                   "m", tools=[tool]))[-1]
+                create.assert_called_once()
+                if should_accept:
+                    self.assertIsInstance(result, ResponseComplete)
+                    self.assertEqual(result.response.tool_calls[0].arguments, arguments)
+                    self.assertEqual(result.response.continuation.payload["output"][0]["arguments"], valid)
+                    self.assertEqual(item.arguments, terminal)
+                else:
+                    self.assertIsInstance(result, ResponseError)
+
     def test_responses_api_adapters_stream_fragmented_function_calls(self):
         from openkyrozen.providers.config import ProviderConfig
         from openkyrozen.providers.openai import OpenAIResponsesProvider

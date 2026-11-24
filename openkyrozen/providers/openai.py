@@ -392,7 +392,7 @@ class OpenAIResponsesProvider(LLMProvider):
                                               {"output": _snapshot_from_sdk(getattr(response, "output", None) or [])})
 
     @staticmethod
-    def _completed_argument_copies(output, started_calls, done_events, finished_items):
+    def _completed_argument_copies(output, started_calls, done_events, finished_items, tools):
         from functools import partial
 
         from openkyrozen.providers.models import _DuplicateToolArgument, _json_snapshot, _unique_object, _validate_json
@@ -450,6 +450,18 @@ class OpenAIResponsesProvider(LLMProvider):
                                               parse_float=reject_inexact_number)
                         candidate = _json_snapshot(parsed, "Tool arguments", sort_keys=True)
                         if candidate != _json_snapshot(declared, "Tool arguments", sort_keys=True):
+                            continue
+                    elif (error.msg == "Extra data" and original == candidate == started["arguments"]
+                          and error.pos == len(original) - 1 and original[error.pos] == "}"):
+                        # All copies agree on one complete object plus one redundant delimiter.
+                        # Accept only the original object's members under this request's tool schema.
+                        from openkyrozen.tools.manifest import ToolRegistry
+
+                        schema = next((tool["parameters"] for tool in tools or ()
+                                       if tool["name"] == started["name"]), None)
+                        candidate = original[:error.pos]
+                        parsed = json.loads(candidate, object_pairs_hook=_unique_object)
+                        if schema is None or ToolRegistry._argument_error(schema, parsed):
                             continue
                     else:
                         parsed = json.loads(candidate, object_pairs_hook=_unique_object)
@@ -571,7 +583,7 @@ class OpenAIResponsesProvider(LLMProvider):
                 if (not exc.malformed_tool_json or event_type != "response.completed"
                         or response_args["raw_finish_reason"] != "completed"):
                     raise
-                copies = self._completed_argument_copies(output, calls, done_arguments, finished_items)
+                copies = self._completed_argument_copies(output, calls, done_arguments, finished_items, tools)
                 if copies:
                     response_args["calls"] = responses_output(final, copies)
                     try:

@@ -179,7 +179,8 @@ _PLAN_TASK_SCHEMA = {'type':'object','properties':{
     'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
-    'execution': _PLAN_EXECUTION_SCHEMA,
+    'execution': {'anyOf': [_PLAN_EXECUTION_SCHEMA, {'type':'null'}],
+                  'description':'Omit or use null when the new task has no declared execution tool.'},
 },'required':['description','acceptance'],'additionalProperties':False}
 _PLAN_UPDATE_FIELDS_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},

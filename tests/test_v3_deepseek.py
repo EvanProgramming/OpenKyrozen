@@ -104,7 +104,9 @@ class DeepSeekStrictChatTests(unittest.TestCase):
         self.assertNotIn("anyOf", fields)
         tool = {"name": "update_plan", "description": "Edit the current plan.", "parameters": schema}
         advertised = strict_chat_tools([tool])[0]["function"]["parameters"]
-        self.assertLess(len(json.dumps(advertised, separators=(",", ":"))), 12_000)
+        advertised_json = json.dumps(advertised, separators=(",", ":"))
+        self.assertLess(len(advertised_json), 12_000)
+        self.assertNotIn('"type":"null"', advertised_json)
 
         omitted = {"omit": True}
         nested = dict.fromkeys(fields["required"], omitted)

@@ -74,6 +74,7 @@ _OMIT_SCHEMA = _closed_object({"omit": {"type": "boolean", "enum": [True]}})
 _OMIT_SCHEMA["description"] = 'Use {"omit":true} when this field does not apply.'
 _MAP_ENTRIES = "key_value_entries"
 _NULL_VALUE = "is_null"
+_STRICT_NULL = _closed_object({_NULL_VALUE: {"type": "boolean", "enum": [True]}})
 _MAP_REF = {"$ref": "#/$def/map"}
 _VALUE_REF = {"$ref": "#/$def/value"}
 _STRICT_MAP = _closed_object({_MAP_ENTRIES: {"type": "array", "items": _closed_object({
@@ -82,7 +83,7 @@ _STRICT_MAP_DEFINITIONS = {
     "map": _STRICT_MAP,
     "value": {"anyOf": [
         *({"type": kind} for kind in ("string", "number", "boolean")),
-        _closed_object({_NULL_VALUE: {"type": "boolean", "enum": [True]}}),
+        _STRICT_NULL,
         {"type": "array", "items": _VALUE_REF}, _STRICT_MAP,
     ]},
 }
@@ -130,7 +131,7 @@ def _flat_optional_fields(schema, *, root=False):
         alternatives = field.get("anyOf", (field,)) if "type" not in field else (field,)
         # The omission marker must be disjoint from every allowed value of the field.
         if not alternatives or any(
-            choice.get("type") not in {"string", "number", "integer", "boolean", "array"}
+            choice.get("type") not in {"string", "number", "integer", "boolean", "array", "null"}
             and not (choice.get("type") == "object" and choice.get("additionalProperties") is False
                      and "omit" not in choice.get("properties", {}))
             for choice in alternatives
@@ -208,6 +209,8 @@ def strict_chat_schema(schema, *, remaining=None, compact_plan_arguments=False):
                     raise ValueError("strict Chat union has an untyped alternative")
                 alternatives.extend(candidates)
             return {"anyOf": alternatives}
+        if item.get("type") == "null":
+            return _STRICT_NULL
         if item.get("type") == "array":
             return {**item, "items": reference(item["items"], depth + 1)}
         if item.get("type") != "object":
@@ -239,6 +242,11 @@ def strict_chat_schema(schema, *, remaining=None, compact_plan_arguments=False):
     def flat_object(item, optional, depth):
         properties = {}
         for name, value in item["properties"].items():
+            if compact_plan_arguments and name == "execution" and name in optional:
+                choices = value.get("anyOf", ())
+                if len(choices) == 2 and choices[1] == {"type": "null"}:
+                    # A new task's null execution has the same meaning as omission.
+                    value = choices[0]
             field = reference(value, depth + 1)
             if name in optional:
                 # A typed omission value cannot collide with the original field.
@@ -286,6 +294,9 @@ def decode_strict_chat_arguments(raw, schema, *, tool_name=None):
         return result
 
     def decode(value, contract, *, root=False):
+        if (contract.get("type") == "null" and isinstance(value, dict)
+                and set(value) == {_NULL_VALUE} and value[_NULL_VALUE] is True):
+            return None
         if contract.get("additionalProperties") is True and not contract.get("properties"):
             # Strict Beta can return canonical objects in referenced schemas.
             if isinstance(value, dict) and set(value) == {_MAP_ENTRIES} and isinstance(value[_MAP_ENTRIES], list):
