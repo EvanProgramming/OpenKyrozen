@@ -20,6 +20,21 @@ The current matched evaluation uses the official [DeepSeek Responses API](https:
 
 For Low Responses, both benchmark arms use a 220-second worker deadline per model call to accommodate the relay's 180-second upstream wait and connection retry. The relay records upstream failures and local disconnects separately.
 
+After the exact candidate passes the offline gates, use the same Low Responses transport for both request-limited preflights. Include every original prior ledger and use the unlimited budget flag only with the release owner's authorization.
+
+```sh
+python -m benchmarks.v3_deepseek \
+  --source "$FROZEN_SOURCE" --candidate-sha "$FROZEN_CANDIDATE_SHA" \
+  --repo "$REPOSITORY_WITH_V2_HISTORY" \
+  --output "$CAMPAIGN_OUTPUT/report.json" \
+  --budget-db "$CAMPAIGN_OUTPUT/budget.sqlite3" \
+  --prior-ledger "$ORIGINAL_PRIOR_LEDGER" \
+  --responses --reasoning-effort low \
+  --limit-cny unlimited --planning-preflight-only
+```
+
+After the preflights pass, remove only `--planning-preflight-only` to continue the same campaign.
+
 Only the separate 36-row model routing experiment is authorized to expose the V4 Pro slot. Auto selects between Flash and V4 Pro, and the fixed-simple control is Flash-only. Both use Low reasoning effort. There is no paid Pro smoke call before this experiment. It inherits the exact 54-row ledger and its 180-row ancestor, and requires a signed role and account binding with the official per-model prices. Its financial input bound is 1,048,576 tokens, so Flash and Pro reserve CNY 2.129920 and CNY 9.547776 per call, respectively. The operational input and output limits stay at 1,000,000 and 4,096 tokens. Settlement requires the served ID and complete token usage. Publication remains pending.
 
 For streamed Responses calls, OpenKyrozen can discard a single redundant closing brace when the correlated argument deltas, done event and terminal response agree byte for byte and the resulting object matches the declared tool schema. This uses the original model response and call ID in the continuation. Other malformed arguments still follow the existing rejection and bounded regeneration path. A regeneration remains a counted R259 recovery.
@@ -124,7 +139,7 @@ The report is descriptive evaluation data, not release authorization. A result i
 
 ## Historical DeepSeek Strict Chat CNY campaign
 
-The in-tree `benchmarks.v3_deepseek` CLI uses the same frozen 180-row cohort and unchanged comparison thresholds, with immutable DeepSeek configuration. It pins the official [DeepSeek Strict Beta Chat Completions endpoint](https://api-docs.deepseek.com/guides/tool_calls/) and the `deepseek-flash` alias (served model `DeepSeek-V4.1-Flash-1017`). Both V2 and V3 use that endpoint, high thinking effort and the same output limit. The two-arm comparison and the 54 planning rows share this fixed-model protocol. The separate 36-row model-routing test retains its Responses policy. Peak prices are CNY 2/M input, 8/M output, 0.04/M cache reads, and conservatively 2/M cache writes, from the [official pricing table](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/). Every request reserves exactly CNY 2.032768 for 1,000,000 input and 4,096 output tokens. Requests are serial through stream completion. Unknown usage keeps its entire reservation; retries and the required metered smoke share the cohort ledger. Smoke calls remain in its journal and do not count toward the 180 matched rows.
+The historical campaign used the official [DeepSeek Strict Beta Chat Completions endpoint](https://api-docs.deepseek.com/guides/tool_calls/) with `deepseek-flash` and High reasoning effort on both arms. The cohort and comparison thresholds are unchanged in the current Low Responses protocol above. Historical peak prices were CNY 2/M input, 8/M output, 0.04/M cache reads, and conservatively 2/M cache writes. Each request reserved CNY 2.032768 for 1,000,000 input and 4,096 output tokens. Unknown usage remains reserved. Smoke and retry calls remain in its ledger.
 
 The relay rejects forced tool selections before reservation because the fixed configuration enables thinking. A documented provider interruption stops dispatch and settles usage when the terminal usage and model identity can be verified. Malformed tool arguments retain the response and call identity, argument byte count and digest, and the parser's byte offset where available. The rejected argument text stays out of the diagnostic. For Working Plan verification and execution, the Strict Chat schema offers closed `command` and `path` argument objects alongside the recursive key/value form for other fields. Native ordinary Working Plans accept `add_command_check` for a new command-only check, and `bind_command_check` adds an exact command to the existing prose criterion of an unstarted task. OpenKyrozen uses the same revision and task validation as a full plan edit. Each task must be explicitly started and receive a matching successful command receipt.
 
