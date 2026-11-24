@@ -6,7 +6,7 @@ OpenKyrozen separates provider selection, credentials, model defaults, and task-
 
 | Name | Credential or identity source | Simple / complex default | Optional extra |
 |---|---|---|---|
-| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-flash` / `deepseek-v4-pro` | Core |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-flash` / same | Core |
 | `openai` | `OPENAI_API_KEY` | `gpt-6-luna` / `gpt-6-astra` | Core |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` / `claude-fable-5-1` | `claude` |
 | `google` | `GEMINI_API_KEY` | `gemini-3.5-flash-lite` / `gemini-3.1-pro-preview` | `gemini` |
@@ -36,7 +36,7 @@ Set the provider and its credential in the shell that starts OpenKyrozen:
 export KYROZEN_PROVIDER=deepseek
 export DEEPSEEK_API_KEY=replace-with-your-key
 export KYROZEN_MODEL_SIMPLE=deepseek-flash
-export KYROZEN_MODEL_COMPLEX=deepseek-v4-pro
+export KYROZEN_MODEL_COMPLEX=deepseek-flash
 kyrozen
 ```
 
@@ -49,6 +49,8 @@ Use `/custom-provider create` to add a named OpenAI-compatible endpoint with its
 ## Model routing and fallback
 
 The normal provider setting has separate simple and complex model slots. The agent chooses between them using its task routing policy. `/model <name>` pins the main agent to one model; `/model auto` restores complexity routing. Sub-agent model assignments remain independent. Ollama never selects an installed model automatically: setup lists installed tags as suggestions and requires a chosen tag. `KYROZEN_CONTEXT_WINDOW_TOKENS` supplies a context size when an otherwise unknown custom model cannot be detected; use the actual provider limit, including the space needed for output.
+
+DeepSeek defaults to `deepseek-flash` in both slots, following the [official model-name guidance](https://api-docs.deepseek.com/quick_start/pricing/). Complexity still determines planning needs. To opt into different models, configure both slots explicitly, for example `KYROZEN_MODEL_SIMPLE=deepseek-flash` and `KYROZEN_MODEL_COMPLEX=deepseek-v4-pro`; `/model auto` then selects between those configured values. Existing saved model slots, environment overrides and main-model pins retain their values. A missing slot in an older record inherits the new Flash default, and switching to DeepSeek initializes its current defaults. Model-switch quality and cost benefits depend on the chosen models and workload.
 
 The registry marks a subset of providers for automatic selection and records preferred fallback providers. A fallback is not guaranteed: it still needs credentials, an available compatible model, and a supported transport. Alternate sub-agent providers use their own configured environment credentials and do not inherit a generic main-provider key. See [sub-agents](subagents.md) before using cross-provider assignments.
 
@@ -83,6 +85,10 @@ provider-neutral `{name, description, parameters}` catalog and preserve native
 call/reply history. Unknown custom endpoints keep native tools unadvertised, but
 an explicit tool request still uses the endpoint's adapter wire format. Strict
 schema controls, parallel execution and reasoning controls remain unadvertised.
+Gemini and Vertex native tools require `google-genai>=1.26.0`. Their canonical
+registry schemas use the SDK's raw JSON Schema field, preserving exclusive
+numeric bounds and nested alternatives; malformed schemas fail before transport.
+Existing OpenAPI `format`/`nullable` descriptors retain the typed SDK route.
 Fallback capabilities intersect configured, model-mapped candidates and clear
 `streaming_tool_calls` because the fallback wrapper buffers a complete response.
 Once a native call is returned, its
@@ -125,7 +131,7 @@ accounting behavior.
 
 ## Costs and changing provider catalogs
 
-The cost ledger attributes usage to the provider and model returned by the integration, including streaming usage when provided. Displayed costs can be estimates when a provider does not report token usage or published pricing is missing. Do not use a README model label or price as evidence that your account can access that model. See [usage and cost](usage-and-cost.md) for price provenance and interpretation.
+The cost ledger attributes usage to the provider and model returned by the integration, including streaming usage when provided. Gemini and Vertex output totals include thinking tokens; the reasoning count is also retained separately when reported. Google Developer API estimates use the dated November 9, 2026 Standard paid tariffs for Gemini 3.5 Flash-Lite, 3.1 Pro Preview, 3.8 Flash and 2.5 Flash, including reported cache discounts, the Pro prompt-size tier and the announced January 2027 Flash increase. Requested and served identities are retained; unknown served versions have unknown cost. These are estimates, not account invoices: free tiers, discounts, non-Standard service, audio and separately billed server tools or cache storage are not priced. Missing cache counts use the full input rate. Vertex does not inherit these Developer API tariffs. Existing historical ledger rows remain unchanged. Delegation uses these estimates for metering; unknown pricing retains its reservation and cannot meter individual calls. Do not use a README model label or price as evidence that your account can access that model. See [usage and cost](usage-and-cost.md) for price provenance and interpretation.
 
 ## Provider failures and request limits
 

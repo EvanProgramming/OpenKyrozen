@@ -12,7 +12,7 @@
 
 ## Install
 
-The current published stable release is **v2.0.8**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
+V3 is not yet released. The commands below install the published stable **v2.0.8**. It supports Python 3.12 and 3.13; Python 3.14 is outside the supported range.
 
 macOS or Linux:
 

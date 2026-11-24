@@ -19,11 +19,11 @@ function Warn([string]$Message) {
 }
 
 if ($ShowHelp) {
-    Write-Output "OpenKyrozen installer: installs the pinned v2.0.8 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
+    Write-Output "OpenKyrozen installer: installs the pinned v3.0.0 GitHub release, uv, Python 3.12/3.13, and the Bubble Tea terminal UI."
     exit 0
 }
 
-$releaseVersion = "2.0.8"
+$releaseVersion = "3.0.0"
 $releaseTag = "v$releaseVersion"
 $goVersion = "1.27.1"
 $releaseBaseUrl = "https://github.com/EvanProgramming/OpenKyrozen/releases/download/$releaseTag"

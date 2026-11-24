@@ -4,7 +4,7 @@ import os
 from typing import Iterator
 from inspect import getattr_static
 from openkyrozen.providers.base import LLMProvider, get_model_response
-from openkyrozen.providers.models import ModelResponse, ProviderCapabilities
+from openkyrozen.providers.models import ModelResponse, ProviderCapabilities, ProviderContractError, provider_identity
 from openkyrozen.providers.registry import PROVIDER_DEFAULT_MODELS, PROVIDER_ENV_VARS, PROVIDER_FALLBACKS
 from openkyrozen.providers.config import ProviderConfig, provider_is_configured
 from openkyrozen.providers.factory import get_provider
@@ -63,6 +63,9 @@ class FallbackProvider(LLMProvider):
             primary_config.model_complex,
             PROVIDER_DEFAULT_MODELS.get(primary_config.provider, ("", ""))[1],
         }
+        if primary_config.provider == "deepseek" and provider is not self._primary:
+            # Preserve the previous complex default when mapping a fallback.
+            primary_complex.add("deepseek-v4-pro")
         if requested in primary_complex and requested not in primary_simple:
             return target_config.model_complex
         if requested in primary_simple:
@@ -94,12 +97,8 @@ class FallbackProvider(LLMProvider):
 
     def _fallback_response(self, state, messages, model, tools=None):
         candidates = [self._primary] + self._fallbacks
-        from openkyrozen.providers.models import ModelResponse, provider_identity, ProviderContractError
-        continuation = next((item.continuation for item in reversed(messages)
-                             if isinstance(item, ModelResponse) and item.continuation is not None), None)
+        continuation, provider = self._continued_provider(messages, candidates)
         if continuation is not None:
-            provider = next((candidate for candidate in candidates
-                             if provider_identity(candidate) == continuation.provider_id), None)
             if provider is None:
                 raise ProviderContractError("The provider that issued native calls is no longer available")
             return get_model_response(provider, messages, continuation.request_model, tools=tools)
@@ -128,6 +127,23 @@ class FallbackProvider(LLMProvider):
             candidates = transient
             round_number += 1
         raise last_error if last_error is not None else budget_exhausted_error(state)
+
+    @staticmethod
+    def _continued_provider(messages, candidates):
+        continuation = next((item.continuation for item in reversed(messages)
+                             if isinstance(item, ModelResponse) and item.continuation is not None), None)
+        provider = next((candidate for candidate in candidates
+                         if continuation is not None and
+                         provider_identity(candidate) == continuation.provider_id), None)
+        return continuation, provider
+
+    def native_tool_protocol_for(self, messages) -> str | None:
+        candidates = [self._primary] + self._fallbacks
+        continuation, provider = self._continued_provider(messages, candidates)
+        if continuation is not None:
+            return provider.native_tool_protocol_for(messages) if provider is not None else None
+        protocols = {candidate.native_tool_protocol_for(messages) for candidate in candidates}
+        return protocols.pop() if len(protocols) == 1 else None
 
     @provider_stream
     @manages_provider_retry

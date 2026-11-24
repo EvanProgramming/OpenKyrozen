@@ -2,7 +2,179 @@ from __future__ import annotations
 
 import time
 import json
-from openkyrozen.tasks.engine import is_complete
+from openkyrozen.tasks.engine import TaskManager, is_complete
+
+
+def _missing_artifact_source_path(record):
+    verification = record.get("verification") or {}
+    if (record.get("action") != "read_tool_artifact" or record.get("authorized") is not True
+            or record.get("failure") != "not_found" or record.get("plan_id") is not None
+            or verification.get("method") != "read_only_tool"
+            or verification.get("status") != "not_applicable"):
+        return None
+    try:
+        arguments = json.loads(record.get("args"))
+    except (TypeError, ValueError):
+        return None
+    path = arguments.get("artifact_id") if isinstance(arguments, dict) else None
+    return path if isinstance(path, str) and path and not path.startswith("artifact_") else None
+
+
+def _replaced_artifact_lookup(plan, record, later_records):
+    path = _missing_artifact_source_path(record)
+    if not path or plan is None or plan.status != "completed":
+        return False
+    for later in later_records:
+        if (later.get("action") == "read_file" and later.get("success") is True
+                and later.get("authorized") is True and later.get("plan_id") == plan.id
+                and later.get("task_id") in plan.task_ids):
+            try:
+                arguments = json.loads(later.get("args"))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(arguments, dict) and arguments.get("path") == path:
+                return True
+    return False
+
+
+def _corrected_plan_validation(manager, record, later_records, turn_id):
+    """A committed, verified plan can supersede only its own no-effect input error."""
+    validation = record.get("verification") or {}
+    observed = validation.get("observed") or {}
+    if (not turn_id or record.get("action") != "update_plan" or record.get("success") is not False
+            or record.get("failure") != "invalid_arguments"
+            or validation.get("method") != "plan_input_validation"
+            or observed.get("committed") is not False or observed.get("turn_id") != turn_id):
+        return False
+    plan = manager.working_plan
+    if (plan is None or plan.status != "completed" or not plan.task_ids
+            or observed.get("target_mismatch") or observed.get("plan_id") not in (None, plan.id)):
+        return False
+    tasks = [task for task in manager.tasks if task.get("id") in plan.task_ids]
+    succeeded = [task for task in tasks if task.get("status") == "succeeded"]
+    if (len(tasks) != len(plan.task_ids) or not succeeded
+            or any(task.get("status") not in {"succeeded", "cancelled"} for task in tasks)
+            or not all(manager._task_has_evidence(task) for task in succeeded)):
+        return False
+    scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id,
+             "session_id": manager.session_id}
+    if any(record.get(key) != value for key, value in scope.items()):
+        return False
+    for later in later_records:
+        verification = later.get("verification") or {}
+        committed = verification.get("observed") or {}
+        if (later.get("action") == "update_plan" and later.get("success") is True
+                and verification.get("method") == "working_plan_commit"
+                and verification.get("status") == "verified"
+                and committed.get("turn_id") == turn_id and committed.get("plan_id") == plan.id
+                and all(later.get(key) == value for key, value in scope.items())):
+            return True
+    return False
+
+
+def _verified_command_replacement(manager, record, later_records):
+    verification = record.get("verification") or {}
+    if (record.get("action") != "run_cmd" or record.get("failure") != "command_failed"
+            or record.get("authorized") is not True or record.get("call_id_source") != "native"
+            or record.get("success") is not False or verification.get("status") != "failed"
+            or verification.get("method") != "command_exit_status" or not record.get("receipt_id")):
+        return False
+    scope = {"user_id": manager.user_id, "workspace_id": manager.workspace_id, "session_id": manager.session_id}
+    if any(record.get(key) != value for key, value in scope.items()) or not record.get("plan_id"):
+        return False
+    tasks = {item["id"]: item for item in manager.tasks if item.get("plan_id") == record["plan_id"]}
+    for later in later_records:
+        verification = later.get("verification") or {}
+        if (later.get("action") != "run_cmd" or later.get("success") is not True
+                or later.get("authorized") is not True or later.get("call_id_source") != "native"
+                or later.get("plan_id") != record["plan_id"]
+                or verification.get("method") != "command_exit_status" or verification.get("status") != "verified"
+                or any(later.get(key) != value for key, value in scope.items())):
+            continue
+        replacement = tasks.get(later.get("task_id")) or {}
+        replaced = (replacement.get("checkpoint") or {}).get("replaced_command_receipts", ())
+        if (replacement.get("status") == "succeeded" and record["receipt_id"] in replaced
+                and any(item.get("receipt_id") == later.get("receipt_id") and item.get("acceptance_ids")
+                        for item in replacement.get("evidence", ()))):
+            return True
+    return False
+
+
+def _working_plan_edit_retried(manager, record, later_records):
+    verification = record.get("verification") or {}
+    if verification.get("method") != "working_plan_write_precondition" or not record.get("plan_id"):
+        return False
+    prior_task_id = record.get("requested_task_id")
+    for later in later_records:
+        effect = later.get("verification") or {}
+        task_id = later.get("requested_task_id") or later.get("task_id")
+        if (later.get("success") is not True or later.get("authorized") is not True or not task_id
+                or later.get("call_id_source") != "native"
+                or (effect.get("status") != "verified" and effect.get("file_content_changed") is not True)
+                or any(later.get(key) != record.get(key) for key in (
+                    "plan_id", "operation_id", "action", "workspace_id", "session_id", "user_id"))):
+            continue
+        if prior_task_id in {None, task_id}:
+            return True
+        plan = manager.working_plan
+        if plan is not None and plan.id == record["plan_id"] and plan.status == "completed":
+            tasks = {task["id"]: task for task in manager.tasks if task["id"] in plan.task_ids}
+            prior, current = tasks.get(prior_task_id, {}), tasks.get(task_id, {})
+            if prior.get("status") == "cancelled" and is_complete(current) and TaskManager._task_has_evidence(current):
+                return True
+    return False
+
+
+def _verified_delegated_edit_result(runtime, turn):
+    """Finish a reviewed edit from its scoped mutation and final check receipts."""
+    interaction = runtime._interaction_controller.state()
+    if any(interaction.get(key) for key in ("executing_plan", "pending_plan", "pending_question")):
+        return None
+    plan = runtime.tasks.working_plan
+    command = turn.tool_records[-1]
+    if (plan is None or plan.status != "completed" or turn.protocol_error_message
+            or command.get("success") is not True or command.get("authorized") is not True
+            or command.get("call_id_source") != "native" or command.get("plan_id") != plan.id
+            or command.get("task_id") not in plan.task_ids
+            or command.get("verification") != {"method": "command_exit_status", "status": "verified",
+                                               "observed": {"exit_code": 0}}):
+        return None
+    tasks = [task for task in runtime.tasks.tasks if task["id"] in plan.task_ids]
+    if (len(tasks) != len(plan.task_ids)
+            or any(task["status"] not in {"succeeded", "cancelled"}
+                   or task["status"] == "succeeded" and not TaskManager._task_has_evidence(task) for task in tasks)):
+        return None
+    coordinator = runtime.subagent_manager.coordinator
+    if coordinator is None:
+        return None
+    from openkyrozen.agent.delegation import TERMINAL
+
+    prior = getattr(turn, "agent_versions", {})
+    runs = [run for run in coordinator.list()
+            if run["status"] not in TERMINAL or run["version"] != prior.get(run["run_id"])]
+    if not runs or any(run["status"] != "succeeded" or not run.get("reviews")
+                       or run["reviews"][-1]["verdict"] != "verified"
+                       or turn.observed_delegation_versions.get(run["run_id"]) != run["version"] for run in runs):
+        return None
+    edits = [record for record in turn.tool_records[:-1]
+             if record["action"] in {"write_file", "edit_file", "apply_patch"}]
+    if not edits or any(record.get("success") is not True or record.get("authorized") is not True
+                        or record.get("call_id_source") != "native" or record.get("plan_id") != plan.id
+                        or (record.get("requested_task_id") or record.get("task_id")) != command["task_id"]
+                        or (record.get("verification") or {}).get("file_content_changed") is not True
+                        for record in edits):
+        return None
+    try:
+        paths = list(dict.fromkeys(json.loads(record["args"])["path"] for record in edits))
+        invocation = json.loads(command["args"])["command"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not isinstance(invocation, str) or not invocation or any(not isinstance(path, str) or not path for path in paths):
+        return None
+    files = ", ".join(f"`{path}`" for path in paths)
+    summaries = "\n".join(run["report"]["summary"] for run in runs)
+    return f"Updated {files}. The verification command `{invocation}` passed with exit code 0.\n\nIndependent review\n\n{summaries}"
+
 
 def _complete_turn(self, turn):
     from openkyrozen.agent.delegation import TERMINAL
@@ -19,7 +191,11 @@ def _complete_turn(self, turn):
                 if run["status"] == "succeeded":
                     turn.tool_records.extend(run.get("parent_receipts", []))
             turn.tool_results_text += "\nDelegated results and independent verification:\n" + self._delegation_summary()
-            if all(run["status"] == "succeeded" for run in delegated):
+            seen = getattr(turn, "observed_delegation_versions", {})
+            already_answered = (getattr(turn, "native_tools", False) and not turn.protocol_error_message
+                                and len((turn.final_answer or "").strip()) >= 10
+                                and all(seen.get(run["run_id"]) == run["version"] for run in delegated))
+            if all(run["status"] == "succeeded" for run in delegated) and not already_answered:
                 # Retain accepted evidence if the synthesis provider fails or
                 # emits an interaction/tool control instead of the report.
                 sections = []
@@ -31,7 +207,7 @@ def _complete_turn(self, turn):
                             for item in submitted[field])
                     sections.append("\n".join(lines))
                 turn.final_answer = "Verified delegated findings:\n\n" + "\n\n".join(sections)
-                final = self._call_llm_with_spinner([{"role": "system", "content":
+                synthesis_messages = [{"role": "system", "content":
                     "Synthesize the verified delegated results for the user. Include evidence and limitations. "
                     "Return a plain-language findings report only, no Actions, AskUser, PlanProposal, or execution plan. "
                     "The user requested findings; proposed code fixes do not require a plan acceptance. "
@@ -40,14 +216,36 @@ def _complete_turn(self, turn):
                     {"role": "user", "content": turn.user_input + "\n" + json.dumps([
                         {"name": run["name"], "assignment": run["assignment"], "report": run["report"],
                          "reviews": [{key: item for key, item in review.items() if key in {"verdict", "summary", "findings", "evidence"}}
-                                     for review in run["reviews"]]} for run in delegated], ensure_ascii=False)}])
+                                     for review in run["reviews"]]} for run in delegated], ensure_ascii=False)}]
+                if getattr(turn, "native_tools", False):
+                    from openkyrozen.providers.errors import ProviderError, ProviderErrorKind
+                    from openkyrozen.providers.models import FinishReason
+                    try:
+                        response = self._get_model_response(
+                            synthesis_messages, tool_names=set(), history_tool_names=set(), stream=False,
+                        )
+                        if response.finish_reason == FinishReason.CANCELLED:
+                            raise ProviderError(ProviderErrorKind.CANCELLED, terminal=True)
+                        if (response.finish_reason == FinishReason.FINAL and not response.tool_calls
+                                and response.text.strip() and not response.text.startswith("[LLM Error]")):
+                            turn.final_answer = response.text.strip()
+                    except ProviderError as exc:
+                        if exc.kind == ProviderErrorKind.CANCELLED:
+                            raise
+                    except Exception:
+                        pass
+                    finally:
+                        self._last_response_is_native.set(True)
+                else:
+                    final = self._call_llm_with_spinner(synthesis_messages)
+                    parsed_final = self._parse_model_response(final)
+                    if (parsed_final["clean"] and not parsed_final["tool_calls"] and not parsed_final["question"]
+                            and not parsed_final["plan_proposal"] and not parsed_final["protocol_error"]
+                            and not parsed_final["unsupported_action_protocol"] and not final.startswith("[LLM Error]")):
+                        turn.final_answer = parsed_final["clean"]
                 turn.turn_prompt_total += self._last_prompt_tokens
                 turn.turn_completion_total += self._last_completion_tokens
-                parsed_final = self._parse_model_response(final)
-                if (parsed_final["clean"] and not parsed_final["tool_calls"] and not parsed_final["question"]
-                        and not parsed_final["plan_proposal"] and not parsed_final["protocol_error"]
-                        and not parsed_final["unsupported_action_protocol"] and not final.startswith("[LLM Error]")):
-                    turn.final_answer = parsed_final["clean"]
+
     if turn.final_answer is None:
         # Fallback if the loop exited without a final answer
         turn.final_answer = self._deterministic_tool_summary(turn.tool_records)
@@ -55,8 +253,11 @@ def _complete_turn(self, turn):
         turn.final_answer = self._deterministic_tool_summary(turn.tool_records)
 
     if turn.protocol_error_message:
+        retain_answer = delegated or (
+            turn.response_text and turn.final_answer == turn.response_text.strip()
+        )
         turn.final_answer = (turn.protocol_error_message + "\n\n" + turn.final_answer
-                             if delegated else turn.protocol_error_message)
+                             if retain_answer else turn.protocol_error_message)
 
     turn.final_answer = self._clean_final_response(turn.final_answer)
 
@@ -79,17 +280,98 @@ def _complete_turn(self, turn):
         turn.final_answer = "\n".join(lines)
 
     verified_fix = turn.fix_workflow and turn.fix_workflow.get("stage") in {"verified", "explained"}
-    failed_tools = [] if verified_fix else [record for record in turn.tool_records if not record.get("success")]
-    turn.runtime_status = "incomplete" if failed_tools else "completed"
-    if failed_tools:
-        failures = "\n".join(
-            f"- {record.get('action', 'Tool')}: operation failed; its result was not verified."
-            for record in failed_tools
+    resolved_reproductions = (turn.fix_workflow or {}).get("resolved_reproduction_receipts")
+    failed_tools = []
+    unresolved_effect_failure = False
+    unresolved_effect_blocked = False
+    for index, record in enumerate(turn.tool_records):
+        if record.get("expected_exit_verified") is True:
+            continue
+        verification = record.get("verification") or {}
+        later_records = turn.tool_records[index + 1:]
+        if _replaced_artifact_lookup(getattr(self.tasks, "working_plan", None), record, later_records):
+            continue
+        if _corrected_plan_validation(self.tasks, record, later_records, self._conversation_turn_id.get()):
+            continue
+        if _verified_command_replacement(self.tasks, record, later_records):
+            continue
+        if _working_plan_edit_retried(self.tasks, record, later_records):
+            continue
+        failed_verification = verification.get("status") == "failed"
+        effect_action = (record.get("action") in {"write_file", "edit_file", "apply_patch"}
+            or record.get("side_effects") in {"filesystem", "remote", "destructive", "mutation", "external"})
+        effect_failure = (effect_action and record.get("success") is False) or (
+            failed_verification and (verification.get("method") == "file_content_match" or effect_action))
+        if (effect_failure and verification.get("status") == "not_applicable"
+                and verification.get("method") == "duplicate_success_refusal"
+                and record.get("operation_id") and any(
+                    earlier.get("success") and (earlier.get("verification") or {}).get("status") == "verified"
+                    and all(earlier.get(key) == record.get(key) for key in ("operation_id", "action", "args", "plan_id"))
+                    and earlier.get("requested_task_id", earlier.get("task_id"))
+                        == record.get("requested_task_id", record.get("task_id"))
+                    for earlier in turn.tool_records[:index])):
+            # Refusing an already verified identical operation does not negate its effect.
+            continue
+        expected_reproduction = verified_fix and (
+            resolved_reproductions is None or record.get("receipt_id") in resolved_reproductions)
+        if not effect_failure and (expected_reproduction or (record.get("success") and not failed_verification)):
+            continue
+        resolved = record.get("operation_id") and any(
+            later.get("success") and (later.get("verification") or {}).get("status") == "verified"
+            and (not failed_verification
+                 or (later.get("verification") or {}).get("method") == verification.get("method"))
+            and all(later.get(key) == record.get(key) for key in ("operation_id", "action", "args", "task_id", "plan_id"))
+            for later in turn.tool_records[index + 1:]
         )
-        turn.final_answer = f"{turn.final_answer.rstrip()}\n\nTool status: incomplete; failed operations were not verified.\n{failures}"
+        if not resolved:
+            failed_tools.append(record)
+            unresolved_effect_failure = unresolved_effect_failure or effect_failure
+            unresolved_effect_blocked = unresolved_effect_blocked or (effect_failure and (
+                (record.get("tool_error") or {}).get("code") in {"permission_denied", "approval_denied"}
+                or record.get("failure") in {"permission_denied", "approval_denied", "denied"}))
+    provider_status = getattr(turn, "runtime_status", "completed")
+    turn.runtime_status = ("incomplete" if failed_tools or turn.protocol_error_message else "completed")
+    structured_child_response = False
+    if failed_tools:
+        failure_lines = [f"- {record.get('action', 'Tool')}: operation failed; its result was not verified."
+                         for record in failed_tools]
+        if unresolved_effect_failure:
+            # Known negative effect evidence supersedes model success prose.
+            # Expected failed reproduction commands retain the existing fix path.
+            context = self.execution_context
+            child_report = bool(getattr(context, "child_run_id", None)
+                                and getattr(context, "coordinator", None) is not None)
+            prior_report, review_report = None, False
+            if child_report:
+                from openkyrozen.agent.delegation import REPORT_LISTS, report
+                try:
+                    prior_report = report(turn.final_answer)
+                except (ValueError, TypeError):
+                    try:
+                        prior_report, review_report = report(turn.final_answer, review=True), True
+                    except (ValueError, TypeError):
+                        pass
+                if prior_report and prior_report.get("status") == "blocked":
+                    unresolved_effect_blocked = True
+            failure_summary = turn.protocol_error_message or (
+                "The required operation is blocked; its effects were not verified."
+                if unresolved_effect_blocked else "The requested effects were not verified.")
+            if child_report:
+                if review_report:
+                    failure_report = {"verdict": "unverifiable", "summary": failure_summary,
+                                      "findings": failure_lines, "evidence": []}
+                else:
+                    failure_report = {**{key: [] for key in REPORT_LISTS}, "findings": failure_lines, "summary": failure_summary,
+                                      "status": "blocked" if unresolved_effect_blocked else "failed"}
+                turn.final_answer = json.dumps(failure_report, ensure_ascii=False)
+                structured_child_response = True
+            else:
+                turn.final_answer = failure_summary
+        if not structured_child_response:
+            failures = "\n".join(failure_lines)
+            turn.final_answer = f"{turn.final_answer.rstrip()}\n\nTool status: incomplete; failed operations were not verified.\n{failures}"
     plan = getattr(self.tasks, "working_plan", None)
-    if (not self.execution_context.child_run_id
-            and turn.interaction_mode == "agent" and getattr(turn, "complexity", None) == "complex"
+    if (turn.interaction_mode == "agent" and getattr(turn, "complexity", None) == "complex"
             and plan is not None and plan.status in {"active", "completed", "cancelled"}):
         plan_tasks = [task for task in self.tasks.tasks if task.get("id") in plan.task_ids]
         succeeded = [task for task in plan_tasks if is_complete(task)]
@@ -120,7 +402,27 @@ def _complete_turn(self, turn):
             status_line = "Plan status: incomplete; required work remains."
             for task in outstanding:
                 status_line += f"\n- {task['status']}: {task['description']}"
-        turn.final_answer = f"{turn.final_answer.rstrip()}\n\n{status_line}"
+        if (not structured_child_response and getattr(self.execution_context, "child_run_id", None)
+                and getattr(self.execution_context, "coordinator", None) is not None):
+            from openkyrozen.agent.delegation import report
+            try:
+                child_report = report(turn.final_answer)
+            except (ValueError, TypeError):
+                pass
+            else:
+                if turn.runtime_status != "completed" and child_report["status"] == "completed":
+                    child_report["status"] = "blocked" if turn.runtime_status == "blocked" else (
+                        "partial" if turn.runtime_status == "incomplete" else "failed")
+                    child_report["uncertainties"].append(status_line)
+                    turn.final_answer = json.dumps(child_report, ensure_ascii=False)
+                structured_child_response = True
+        if not structured_child_response:
+            turn.final_answer = f"{turn.final_answer.rstrip()}\n\n{status_line}"
+
+    if (turn.protocol_error_message or failed_tools) and turn.runtime_status == "completed":
+        turn.runtime_status = "incomplete"
+    if provider_status == "blocked" or unresolved_effect_blocked:
+        turn.runtime_status = "blocked"
 
     completion_status = getattr(self, "_turn_completion_status", None)
     if callable(getattr(completion_status, "set", None)):
@@ -131,7 +433,14 @@ def _complete_turn(self, turn):
         "time": time.time() - turn.turn_start,
         "tool_calls": len(turn.tool_calls),
     })
-    return self._finish_learning_run(
-        turn.learning_run, turn.learning_receipts, turn.user_input, turn.final_answer, turn.tool_records,
-        turn.turn_prompt_total + turn.turn_completion_total, turn.turn_start,
-    )
+    try:
+        return self._finish_learning_run(
+            turn.learning_run, turn.learning_receipts, turn.user_input, turn.final_answer, turn.tool_records,
+            turn.turn_prompt_total + turn.turn_completion_total, turn.turn_start,
+        )
+    except Exception as exc:
+        try:
+            self._record_learning_event("learning.bookkeeping_failed", {"reason": type(exc).__name__})
+        except Exception:
+            pass
+        return turn.final_answer

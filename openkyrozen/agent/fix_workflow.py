@@ -137,6 +137,8 @@ def _fix_is_mutation(self, record: dict[str, Any]) -> bool:
         return False
     if action in self._FIX_MUTATION_ACTIONS:
         return True
+    if action in {"edit_file", "apply_patch"}:
+        return record.get("authorized") is True
     if action in {"run_cmd", "execute_terminal_command"}:
         command = str(record.get("args", "")).lower()
         return not bool(re.search(r"pytest|unittest|make\s+(?:test|check|lint)|cargo\s+test|go\s+test", command)) and bool(
@@ -172,6 +174,24 @@ def _fix_verification_records(self, records: list[dict[str, Any]]) -> list[dict[
         if mutation_seen and str(record.get("action", "")) in self._FIX_VERIFICATION_ACTIONS:
             result.append(record)
     return result
+
+
+def _verified_native_reproducer(reproduction, after_edit):
+    def command_receipt(record):
+        return (record.get("action") == "run_cmd" and record.get("call_id_source") == "native"
+                and record.get("authorized") is True
+                and record.get("receipt_id") and record.get("operation_id")
+                and (record.get("verification") or {}).get("method") == "command_exit_status")
+
+    failures = [record for record in reproduction if command_receipt(record)
+                and record.get("success") is False and record.get("failure") == "command_failed"
+                and record["verification"].get("status") == "failed"]
+    commands = {record["operation_id"] for record in failures}
+    latest = {record["operation_id"]: record for record in after_edit if command_receipt(record)
+              and record["operation_id"] in commands}
+    passed = {operation: record for operation, record in latest.items() if record.get("success") is True
+              and record["verification"].get("status") == "verified"}
+    return list(passed.values()), [record["receipt_id"] for record in failures if record["operation_id"] in passed]
 
 
 def _fix_has_marker(self, text: str, markers: tuple[str, ...]) -> bool:
@@ -222,10 +242,21 @@ def _advance_fix_workflow(self, state: dict[str, Any] | None, user_input: str, p
         analysis_text, ("hypothes", "i believe", "assume", "假设", "推测")
     ):
         state = self._persist_fix_stage(state, "hypothesized", reason="the model stated a repair hypothesis")
-    if state.get("stage") == "hypothesized" and mutations:
+    verified_reruns = []
+    if state.get("stage") == "diagnosed" and any(
+        (record.get("verification") or {}).get("file_content_changed") is True
+        and record["verification"].get("status") != "failed" for record in mutations
+    ):
+        last_effect = max(index for index, record in enumerate(records) if self._fix_is_mutation(record)
+                          or (record.get("success") and record.get("side_effects") in {"filesystem", "mutation", "destructive"}))
+        verified_reruns, resolved = _verified_native_reproducer(reproduction, records[last_effect + 1:])
+        if resolved:
+            state["resolved_reproduction_receipts"] = resolved
+    if mutations and (state.get("stage") == "hypothesized" or verified_reruns):
         evidence = [self._fix_evidence_record(state, "fixed", item, observed=True) for item in mutations]
         state = self._persist_fix_stage(state, "fixed", reason="a successful mutation receipt was recorded", evidence=evidence)
     if state.get("stage") == "fixed":
+        verification = verified_reruns or verification
         if verification and any(item.get("success") for item in verification):
             evidence = [self._fix_evidence_record(state, "verified", item, observed=True)
                         for item in verification if item.get("success")]

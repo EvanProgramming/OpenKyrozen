@@ -38,7 +38,14 @@ class HistoryManager:
                  *, source_scope_id: str, user_id: str = "local", workspace_id: str = "default",
                  session_id: str):
         self.store = store
-        self.root = Path(root).expanduser().resolve()
+        root_path = Path(root).expanduser().absolute()
+        self.root = root_path.resolve()
+        database = Path(store.path).expanduser().absolute()
+        if database.is_relative_to(root_path):
+            database = self.root / database.relative_to(root_path)
+        self.database_paths = {Path(str(path) + suffix)
+                               for path in (database, database.resolve())
+                               for suffix in ("", "-wal", "-shm", "-journal")}
         self.state_root = Path(state_root).expanduser().resolve()
         self.config_path = self.state_root.parent.parent / ".kyrozen_config.json"
         if not re.fullmatch(r"source-[a-f0-9]{32}", str(source_scope_id)):
@@ -67,7 +74,8 @@ class HistoryManager:
             relative = path.relative_to(self.root)
         except ValueError:
             return True
-        if ".git" in relative.parts:
+        if (".git" in relative.parts or path in self.database_paths
+                or (path.is_symlink() and any(db.is_relative_to(path) for db in self.database_paths))):
             return True
         try:
             if path == self.state_root or path.is_relative_to(self.state_root):
@@ -314,11 +322,16 @@ class HistoryManager:
         manifest = self._manifest(node)
         if not snapshot_workspace.is_dir():
             raise HistoryError("history workspace snapshot is missing")
+        for relative, item in manifest.items():
+            destination = self.root / relative
+            if (not self._excluded(destination) and item.get("kind") != "dir"
+                    and any(db.is_relative_to(destination) for db in self.database_paths)):
+                raise HistoryError("history restore would overwrite the active database directory")
         for base, directories, files in os.walk(self.root, topdown=False, followlinks=False):
             base_path = Path(base)
             for name in files + directories:
                 path = base_path / name
-                if self._excluded(path):
+                if self._excluded(path) or any(db.is_relative_to(path) for db in self.database_paths):
                     continue
                 relative = path.relative_to(self.root).as_posix()
                 if relative not in manifest:
@@ -326,14 +339,17 @@ class HistoryManager:
         for relative, item in sorted(manifest.items(), key=lambda pair: (pair[1].get("kind") != "dir", pair[0])):
             destination = self.root / relative
             kind = item.get("kind")
+            if self._excluded(destination):
+                continue
             if kind == "dir":
                 if destination.exists() and not destination.is_dir():
                     self._remove_path(destination)
                 destination.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.chmod(destination, int(item.get("mode", 0o755)), follow_symlinks=False)
-                except (OSError, NotImplementedError):
-                    pass
+                if not any(db.is_relative_to(destination) for db in self.database_paths):
+                    try:
+                        os.chmod(destination, int(item.get("mode", 0o755)), follow_symlinks=False)
+                    except (OSError, NotImplementedError):
+                        pass
             elif kind == "symlink":
                 if destination.exists() or destination.is_symlink():
                     self._remove_path(destination)

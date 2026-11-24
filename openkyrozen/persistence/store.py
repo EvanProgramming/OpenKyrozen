@@ -35,8 +35,19 @@ class EventStore:
     _json = staticmethod(SQLiteDatabase._json)
     _loads = staticmethod(SQLiteDatabase._loads)
 
+    def close(self):
+        self.database.close()
+
     def append_event(self, event_type: str, payload: Any, *, user_id: str='local', workspace_id: str='default', session_id: str | None=None, task_id: str | None=None):
         return self.events.append_event(event_type, payload, user_id=user_id, workspace_id=workspace_id, session_id=session_id, task_id=task_id)
+
+    def _cancellation_deadline(self):
+        return self.database._cancellation_deadline()
+
+    def _append_control_audit(self, event_type: str, payload: Any, *, user_id: str,
+                              workspace_id: str, session_id: str):
+        return self.events._append_control_audit(event_type, payload, user_id=user_id,
+                                                workspace_id=workspace_id, session_id=session_id)
 
     def conversation_head(self, *, user_id: str, workspace_id: str, session_id: str):
         return self.events.conversation_head(user_id=user_id, workspace_id=workspace_id, session_id=session_id)
@@ -77,8 +88,11 @@ class EventStore:
         return self.deletion.delete_workspace(user_id=user_id, workspace_id=workspace_id,
                                               registry_workspace_id=registry_workspace_id)
 
-    def list_events(self, event_type: str | None=None, *, limit: int=100, workspace_id: str='default', session_id: str | None=None, user_id: str | None=None):
-        return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id, user_id=user_id)
+    def list_events(self, event_type: str | None = None, *, limit: int | None = 100,
+                    workspace_id: str = "default", session_id: str | None = None,
+                    user_id: str | None = None, append_order: bool = False):
+        return self.events.list_events(event_type, limit=limit, workspace_id=workspace_id, session_id=session_id,
+                                       user_id=user_id, append_order=append_order)
 
     def list_interaction_events(self, *, workspace_id: str, session_id: str, user_id: str):
         return self.events.list_interaction_events(
@@ -216,9 +230,12 @@ class EventStore:
             plan_id, status, user_id=user_id, workspace_id=workspace_id, session_id=session_id, **expected,
         )
 
-    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id):
+    def list_working_plan_tasks(self, plan_id, *, user_id, workspace_id, session_id,
+                                current_completed_revision=None, current_active_revision=None):
         return self.tasks.list_working_plan_tasks(
             plan_id, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+            current_completed_revision=current_completed_revision,
+            current_active_revision=current_active_revision,
         )
 
     def write_working_plan(self, plan, tasks, *, user_id, workspace_id, session_id):
@@ -226,14 +243,19 @@ class EventStore:
             plan, tasks, user_id=user_id, workspace_id=workspace_id, session_id=session_id,
         )
 
+    def current_interaction_event_id(self, *, user_id, workspace_id, session_id):
+        return self.tasks.current_interaction_event_id(
+            user_id=user_id, workspace_id=workspace_id, session_id=session_id,
+        )
+
     def apply_working_plan_edit(self, plan, tasks, *, expected_revision, expected_tasks,
                                 user_id, workspace_id, session_id, transaction_event=None,
-                                revision_operations=None, revision_reason=None):
+                                revision_operations=None, revision_reason=None, expected_completed_plan=None):
         return self.tasks.apply_working_plan_edit(
             plan, tasks, expected_revision=expected_revision, expected_tasks=expected_tasks,
             user_id=user_id, workspace_id=workspace_id, session_id=session_id,
             transaction_event=transaction_event, revision_operations=revision_operations,
-            revision_reason=revision_reason,
+            revision_reason=revision_reason, expected_completed_plan=expected_completed_plan,
         )
 
     def claim_task(self, *, user_id, workspace_id, session_id):

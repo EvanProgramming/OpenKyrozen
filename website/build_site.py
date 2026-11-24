@@ -17,6 +17,7 @@ PATHS = {
     "en": {"home": "/", "features": "/features/", "install": "/install/", "faq": "/faq/", "docs": "/docs/"},
     "zh-cn": {"home": "/zh-cn/", "features": "/zh-cn/features/", "install": "/zh-cn/install/", "faq": "/zh-cn/faq/", "docs": "/zh-cn/docs/"},
 }
+# Keep public downloads on the published stable release until V3 publication.
 INSTALL_COMMANDS = {
     "unix": "curl -fsSL https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.sh | sh",
     "windows": "irm https://raw.githubusercontent.com/EvanProgramming/OpenKyrozen/v2.0.8/install.ps1 | iex",
@@ -361,6 +362,7 @@ def document(lang, slug, page):
       {('<figure class="hero-visual"><div class="visual-topline"><span>OPENKYROZEN / TUI</span><span>PROJECT CONTEXT</span></div><img src="/assets/cockpit.svg" alt="' + escape(image_alt, quote=True) + '" width="1200" height="720"><figcaption><span class="status-dot" aria-hidden="true"></span>' + ('Terminal-native · Evidence-backed · Local-first' if lang == 'en' else '终端原生 · 证据驱动 · 本地优先') + '</figcaption></figure>') if slug == 'home' else ''}
     </section>
     {page['body']}
+    {('<p class="note">V3 is not yet released. Public downloads install stable V2.0.8.</p>' if lang == 'en' else '<p class="note">V3 尚未发布。公开下载仍安装稳定版 V2.0.8。</p>') if slug in {'home', 'install'} else ''}
   </main>
   <footer class="site-footer">
     <a class="brand" href="{PATHS[lang]['home']}"><span class="brand-mark" aria-hidden="true"><i></i><b></b></span><span>openkyrozen<span class="brand-period">.</span></span></a>

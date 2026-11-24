@@ -23,6 +23,10 @@ class TaskWorker:
         if task is None:
             return None
         task_id = task["id"]
+        if (task.get("checkpoint", {}).get("recovery_effect") or {}).get("status") == "unknown":
+            index = next(i for i, item in enumerate(self.manager.tasks) if item["id"] == task_id)
+            self.manager.set_status(index, "blocked", reason="Inspect and reconcile the interrupted operation before resuming.")
+            return {"task": self.manager.tasks[index], "status": "blocked", "result": "Interrupted effect is unknown.", "evidence": {}}
         try:
             outcome = self.executor(task)
             if not isinstance(outcome, dict):

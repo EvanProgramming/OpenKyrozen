@@ -1,4 +1,5 @@
 import json
+from contextlib import ExitStack, closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,14 +53,19 @@ class BugFixWorkflowTests(unittest.TestCase):
         self.original_root = main._get_workspace_root()
         self.original_fix_outcomes = list(main._fix_outcomes)
         self.tempdirs = []
+        self._sqlite_owners = ExitStack()
+        self.addCleanup(self._sqlite_owners.close)
 
     def tearDown(self):
+        if main.memory_bank is not self.original_memory:
+            main.memory_bank.close()
         main.memory_bank = self.original_memory
         main.tasks = self.original_tasks
         main.learning_engine = self.original_learning
         main._interaction_controller = self.original_interaction
         main._fix_outcomes[:] = self.original_fix_outcomes
         main._set_workspace_root(self.original_root)
+        self._sqlite_owners.close()
         for directory in self.tempdirs:
             directory.cleanup()
 
@@ -67,7 +73,9 @@ class BugFixWorkflowTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.tempdirs.append(directory)
         root = Path(directory.name)
-        main.memory_bank = MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")
+        with patch.dict("os.environ", {"KYROZEN_DISABLE_VECTOR_INDEX": "1"}):
+            main.memory_bank = self._sqlite_owners.enter_context(closing(
+                MemoryBank(root / "state.sqlite3", workspace_id="bugfix", session_id="turn")))
         main.tasks = TaskManager(main.memory_bank.store, workspace_id="bugfix", session_id="turn")
         main._interaction_controller = InteractionController(
             main.memory_bank.store, workspace_id="bugfix", session_id="turn",
@@ -82,10 +90,56 @@ class BugFixWorkflowTests(unittest.TestCase):
              patch.object(main, "_build_memory_context", return_value=""), \
              patch.object(main, "_call_llm_with_spinner", side_effect=responses), \
              patch.object(main, "_get_llm_response", return_value=""), \
+             patch.object(main, "_schedule_post_turn_learning"), \
              patch.object(main, "_finish_learning_run", side_effect=lambda run, receipts, task,
                           result, records, tokens, started: result):
             reply = main._chat_turn("bug: the command fails", clear_tasks=True)
         return root, reply, main.memory_bank.store
+
+    def test_bugfix_fixture_does_not_schedule_unrelated_background_learning(self):
+        with patch.object(main, "_schedule_post_turn_learning") as schedule:
+            self._run_fake_bug_turn(["The bug is fixed now."] * 4)
+        schedule.assert_not_called()
+
+    def test_structured_source_edits_separate_reproduction_from_verification(self):
+        failed = {"action": "run_cmd", "args": "python -m unittest", "result": "FAILED", "success": False}
+        passed = {**failed, "result": "OK", "success": True}
+        for tool in ("edit_file", "apply_patch"):
+            with self.subTest(tool=tool):
+                rejected = {"action": tool, "authorized": False, "success": False}
+                accepted = {"action": tool, "authorized": True, "success": True}
+                self.assertEqual(main._fix_verification_records([failed, rejected, passed]), [])
+                self.assertEqual(main._fix_reproduction_records([failed, accepted, passed]), [failed])
+                self.assertEqual(main._fix_verification_records([failed, accepted, passed]), [passed])
+
+    def test_native_fix_recognizes_a_verified_rerun_without_hypothesis_prose(self):
+        self._run_fake_bug_turn(["The bug is fixed now."] * 4)
+        native = {"call_id_source": "native", "authorized": True}
+        failed = {**native, "receipt_id": "reproduce", "operation_id": "original-command",
+                  "action": "run_cmd", "result": "FAILED", "success": False, "failure": "command_failed",
+                  "verification": {"method": "command_exit_status", "status": "failed"}}
+        edit = {**native, "receipt_id": "edit", "action": "edit_file", "success": True,
+                "verification": {"file_content_changed": True}}
+        passed = {**failed, "receipt_id": "rerun", "result": "OK", "success": True, "failure": None,
+                  "verification": {"method": "command_exit_status", "status": "verified"}}
+        for label, records, expected in (
+            ("verified", [failed, edit, passed], "explained"),
+            ("unrelated check", [failed, edit, {**passed, "operation_id": "different-command"}], "blocked"),
+            ("failed retry", [failed, edit, passed, {**failed, "receipt_id": "retry"}], "blocked"),
+            ("stale check", [failed, edit, passed, {**edit, "receipt_id": "later-edit"}], "blocked"),
+            ("later checkout", [failed, edit, passed, {"action": "git_checkout", "success": True,
+                                                       "side_effects": "mutation"}], "blocked"),
+            ("unproven edit", [failed, {**edit, "verification": {}}, passed], "blocked"),
+        ):
+            with self.subTest(label=label):
+                request = "Fix the bug"
+                answer = "The bug is fixed. The original tests passed."
+                state, reply = main._advance_fix_workflow(main._start_fix_workflow(request), request, answer, records)
+                self.assertEqual(state["stage"], expected)
+                if expected == "explained":
+                    self.assertEqual(reply, answer)
+                    self.assertEqual(state["resolved_reproduction_receipts"], ["reproduce"])
+                    self.assertEqual([item["receipt_id"] for item in state["evidence"]], ["reproduce", "edit", "rerun"])
 
     def test_fake_provider_requires_real_reproduce_fix_and_verify_evidence(self):
         responses = [

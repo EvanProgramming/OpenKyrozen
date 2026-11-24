@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import json
 import os
 import tempfile
@@ -133,7 +134,21 @@ class SubAgentTests(unittest.TestCase):
         policy = object.__new__(Delegation)
         policy.root = Path.cwd()
         self.assertTrue(policy._verify_read_only_result(run, report, result))
-        result["tool_records"][0]["success"] = False
+        receipt = result["tool_records"][0]
+        receipt["args"] = '{"path":"source.py"}'
+        self.assertTrue(policy._verify_read_only_result(run, report, result))
+        report["evidence"] = [{"receipt_id": ["read-1"]}]
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+        report["evidence"] = [{"receipt_id": "read-1"}]
+        receipt["args"] = '{"path":"other.py"}'
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+        receipt["args"] = '{"path":"source.py"}'
+        receipt["receipt_id"] = None
+        report["evidence"] = [{"receipt_id": None}]
+        self.assertFalse(policy._verify_read_only_result(run, report, result))
+        report["evidence"] = [{"receipt_id": "read-1"}]
+        receipt["receipt_id"] = "read-1"
+        receipt["success"] = False
         self.assertFalse(policy._verify_read_only_result(run, report, result))
 
     def test_rejected_subagent_record_uses_persisted_receipt_id(self):
@@ -442,8 +457,8 @@ class SubAgentTests(unittest.TestCase):
             unrelated.join(timeout=1)
 
     def test_profile_has_independent_session_memory_and_capabilities(self):
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")))
             manager = SubAgentManager(
                 memory, runner=lambda profile, task, context, tools, *, run_id: f"done:{profile.name}",
             )
@@ -521,8 +536,8 @@ class SubAgentTests(unittest.TestCase):
             self.assertNotIn("SSAI_ACTION", result["result"])
 
     def test_manager_persists_tool_receipts_failures_and_evidence(self):
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")))
             manager = SubAgentManager(memory, runner=lambda profile, task, context, tools, *, run_id: {
                 "result": "completed",
                 "tool_records": [{"receipt_id": "receipt-1", "action": "write_file",
@@ -544,8 +559,8 @@ class SubAgentTests(unittest.TestCase):
             self.assertEqual(len(completed["payload"]["tool_receipts"]), 2)
 
     def test_manager_persists_nonzero_runner_metrics_without_zero_fallback(self):
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")))
             manager = SubAgentManager(
                 memory, learning_engine=LearningEngine(memory),
                 provider_model=lambda: "deepseek:deepseek-v4-flash",
@@ -578,8 +593,8 @@ class SubAgentTests(unittest.TestCase):
         provider._client = SimpleNamespace(chat=SimpleNamespace(
             completions=SimpleNamespace(create=lambda **_kwargs: response),
         ))
-        with tempfile.TemporaryDirectory() as directory:
-            memory = MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            memory = sqlite_owners.enter_context(closing(MemoryBank(Path(directory) / "state.sqlite3", workspace_id="project")))
             manager = SubAgentManager(
                 memory, runner=main._run_subagent_llm, learning_engine=LearningEngine(memory),
                 provider_model=lambda: "deepseek:deepseek-v4-flash",

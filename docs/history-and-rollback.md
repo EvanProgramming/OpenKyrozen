@@ -10,7 +10,7 @@ Use `/history` in the terminal UI or the session-history routes listed in [tool-
 
 In the TUI, choose a numbered history node to preview the target. Explicitly confirm with `/rollback NUMBER confirm` after reviewing it. The session head is updated only through the rollback operation. A stale head or a mismatched session is rejected instead of overwriting a newer branch. In the web API, the rollback endpoint is scoped to the requested session and node; authenticate and inspect its preview/result before continuing work.
 
-Rollback restores the recorded files in scope and selects the conversation branch captured by that node. It does not reverse external effects such as messages, network requests, deployments, provider charges, or database changes outside the captured workspace. It also does not imply that shared memory claims, agent credentials, or another session's state have been erased. Check those stores separately.
+Rollback restores the recorded files in scope and selects the conversation branch captured by that node. The active OpenKyrozen SQLite database and its journal files are excluded even when they are inside the workspace; older snapshots cannot restore them over the live database. If an old snapshot would replace the directory containing that database with a file, rollback is rejected. It does not reverse external effects such as messages, network requests, deployments, provider charges, or database changes outside the captured workspace. It also does not imply that shared memory claims, agent credentials, or another session's state have been erased. Check those stores separately.
 
 ## Recovery points and safety
 

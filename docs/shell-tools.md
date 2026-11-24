@@ -16,8 +16,10 @@ limited to 4,000 characters, and each stream retains at most one million
 characters. A process handle belongs to its creating actor, workspace, and
 session, remains in memory only, expires at its requested timeout (at most 30
 minutes), and is stopped when the application closes. Handles cannot be
-restored after restart. A session can own up to 32 handles until the application
-closes so completed output remains available for paging.
+restored after restart. A session can run up to 32 background processes at once
+and retains up to 64 total handles. At capacity, starting another process
+replaces the oldest finalized handle and its cached output. A session at capacity
+with no finalized handle refuses new launches until one can be replaced.
 
 The native structured API exposes all fields directly, including
 `sandbox_backend` (`bubblewrap`, `sandbox-exec`, or `unavailable`). The

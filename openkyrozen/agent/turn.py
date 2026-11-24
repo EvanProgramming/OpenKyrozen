@@ -1,5 +1,5 @@
 """State shared by the phases of a single turn."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class CancellationEvents:
@@ -38,6 +38,8 @@ class TurnContext:
     turn_start: Any = None
     runtime_status: str = "completed"
     memory_packet: str = ""
+    native_tools: bool = False
+    observed_delegation_versions: dict[str, int] = field(default_factory=dict)
 
     @property
     def planning_required(self) -> bool:
@@ -62,6 +64,17 @@ class ExecutionContext:
     delegation_tools: frozenset[str] | None = None
     max_steps: int | None = None
     cancelled: Any = None
+    native_control_input: str = ""
+    native_plan_inspected: bool = False
+    native_plan_active: bool = False
+    native_plan_completed: bool = False
+    native_completed_predecessor: tuple[str, int, str | None] | None = None
+    native_wire_regeneration: bool = False
+
+    @property
+    def scoped_readonly_assignment(self) -> bool:
+        return (bool(self.child_run_id) and self.delegation_tools is not None
+                and self.capability_token is not None and not self.capability_token.allows("write"))
 
 
 def scoped_turn(function):

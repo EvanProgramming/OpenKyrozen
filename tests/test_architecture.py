@@ -1,3 +1,4 @@
+from contextlib import ExitStack, closing
 import concurrent.futures
 import json
 import os
@@ -53,12 +54,12 @@ print('imports are inert')
             self.assertFalse((Path(directory) / ".kyrozen").exists())
 
     def test_actor_session_and_workspace_ownership_survives_switching(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}), ExitStack() as sqlite_owners:
             root = Path(directory)
             first, second = root / "first", root / "second"
             first.mkdir()
             second.mkdir()
-            memory = build_memory(root / "state.sqlite3", index=_VectorIndex())
+            memory = sqlite_owners.enter_context(closing(build_memory(root / "state.sqlite3", index=_VectorIndex())))
             application = build_application(memory=memory)
             runtime = application.runtime
             try:
@@ -88,8 +89,8 @@ print('imports are inert')
                 application.close()
 
     def test_parallel_execution_keeps_turn_tokens_and_sessions_local(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}):
-            application = build_application(memory=build_memory(Path(directory) / "state.sqlite3", index=_VectorIndex()))
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HOME": directory}), ExitStack() as sqlite_owners:
+            application = build_application(memory=sqlite_owners.enter_context(closing(build_memory(Path(directory) / "state.sqlite3", index=_VectorIndex()))))
             runtime = application.runtime
             runtime.configure_launch_context(project_path=directory)
             sessions = [runtime.open_session(name) for name in ("a", "b")]
@@ -120,15 +121,15 @@ print('imports are inert')
                 application.close()
 
     def test_vector_failure_falls_back_to_authoritative_store_and_rebuilds(self):
-        with tempfile.TemporaryDirectory() as directory:
-            store = EventStore(Path(directory) / "state.sqlite3")
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as sqlite_owners:
+            store = sqlite_owners.enter_context(closing(EventStore(Path(directory) / "state.sqlite3")))
             index = _VectorIndex()
-            memory = MemoryBank(store.path, store=store, index=index)
+            memory = sqlite_owners.enter_context(closing(MemoryBank(store.path, store=store, index=index)))
             memory.add_log("FACT: modular architecture", kind="fact")
             self.assertIn("FACT: modular architecture", memory.recall("modular architecture"))
             self.assertEqual(memory.rebuild_index(), 1)
             self.assertEqual(len(index.memories.documents), 1)
-            reopened = MemoryBank(store.path, store=EventStore(store.path))
+            reopened = sqlite_owners.enter_context(closing(MemoryBank(store.path, store=sqlite_owners.enter_context(closing(EventStore(store.path))))))
             self.assertIn("FACT: modular architecture", reopened.recall("modular architecture"))
 
 

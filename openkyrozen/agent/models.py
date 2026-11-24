@@ -39,3 +39,4 @@ class AgentSession:
         self.process_manager = self.workspace.adapters.new_process_manager(
             self.memory.user_id, self.workspace.root, self.session_id,
         )
+        self.process_manager._bind_audit(self.memory.store, self.tasks.workspace_id)

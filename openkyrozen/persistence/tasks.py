@@ -141,14 +141,35 @@ class TasksRepository:
                 raise
 
     def list_working_plan_tasks(self, plan_id: str, *, user_id: str, workspace_id: str,
-                                session_id: str) -> list[dict[str, Any]]:
+                                session_id: str,
+                                current_completed_revision: int | None = None,
+                                current_active_revision: int | None = None) -> list[dict[str, Any]]:
+        current_check = ""
+        parameters = (plan_id, user_id, workspace_id, session_id or None)
+        if current_completed_revision is not None or current_active_revision is not None:
+            if current_active_revision is not None and current_completed_revision is not None:
+                raise ValueError("select only one current Working Plan phase")
+            status, revision = ("active", current_active_revision) if current_active_revision is not None else (
+                "completed", current_completed_revision)
+            # Read the current revision and its task evidence in one snapshot.
+            current_check = (
+                "AND EXISTS (SELECT 1 FROM working_plans p WHERE p.id=working_plan_tasks.plan_id "
+                "AND p.status=? AND p.revision=? AND p.user_id=? AND p.workspace_id=? AND p.session_id=? "
+            )
+            parameters += (status, revision, user_id, workspace_id, session_id or "")
+            if status == "completed":
+                current_check += (
+                    "AND p.rowid=(SELECT MAX(rowid) FROM working_plans WHERE user_id=p.user_id "
+                    "AND workspace_id=p.workspace_id AND session_id=p.session_id) "
+                )
+            current_check += ") "
         with self.database.connection() as db:
             rows = db.execute(
                 "SELECT tasks.*, working_plan_tasks.plan_id AS plan_id, working_plan_tasks.position AS plan_position "
                 "FROM working_plan_tasks JOIN tasks ON tasks.id=working_plan_tasks.task_id "
                 "WHERE working_plan_tasks.plan_id=? AND tasks.user_id=? AND tasks.workspace_id=? "
-                "AND tasks.session_id IS ? ORDER BY working_plan_tasks.position",
-                (plan_id, user_id, workspace_id, session_id or None),
+                "AND tasks.session_id IS ? " + current_check + "ORDER BY working_plan_tasks.position",
+                parameters,
             ).fetchall()
         result = []
         for row in rows:
@@ -215,12 +236,27 @@ class TasksRepository:
                 db.rollback()
                 raise
 
+    @staticmethod
+    def _current_interaction_event_id(db, user_id, workspace_id, session_id):
+        event = db.execute(
+            "SELECT id FROM events WHERE user_id=? AND workspace_id=? AND session_id=? "
+            "AND (event_type LIKE 'interaction.%' OR event_type='history.restored') "
+            "ORDER BY rowid DESC LIMIT 1",
+            (user_id, workspace_id, session_id or ""),
+        ).fetchone()
+        return event["id"] if event is not None else None
+
+    def current_interaction_event_id(self, *, user_id, workspace_id, session_id):
+        with self.database.connection() as db:
+            return self._current_interaction_event_id(db, user_id, workspace_id, session_id)
+
     def apply_working_plan_edit(self, plan: dict[str, Any], tasks: list[dict[str, Any]], *,
                                 expected_revision: int, expected_tasks: list[dict[str, Any]],
                                 user_id: str, workspace_id: str, session_id: str | None,
                                 transaction_event: dict[str, Any] | None = None,
                                 revision_operations: list[dict[str, Any]] | None = None,
-                    revision_reason: str | None = None) -> int:
+                                revision_reason: str | None = None,
+                                expected_completed_plan: tuple[str, int, str | None] | None = None) -> int:
         """Commit a validated plan snapshot only if its revision and execution state are current."""
         import uuid
 
@@ -229,6 +265,17 @@ class TasksRepository:
         with self.database._lock, self.database.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                if expected_completed_plan is not None:
+                    predecessor = db.execute(
+                        "SELECT id,revision,status FROM working_plans WHERE user_id=? "
+                        "AND workspace_id=? AND session_id=? ORDER BY rowid DESC LIMIT 1",
+                        (user_id, workspace_id, scoped_session),
+                    ).fetchone()
+                    if (expected_revision != 0 or predecessor is None or predecessor["status"] != "completed"
+                            or (predecessor["id"], predecessor["revision"]) != expected_completed_plan[:2]):
+                        raise ValueError("Completed Working Plan changed before follow-up creation")
+                    if self._current_interaction_event_id(db, user_id, workspace_id, scoped_session) != expected_completed_plan[2]:
+                        raise ValueError("Interaction state changed before follow-up creation")
                 expected_proposal = (transaction_event or {}).get("expected_proposal")
                 if expected_proposal is not None:
                     latest = db.execute(

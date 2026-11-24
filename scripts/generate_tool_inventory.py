@@ -22,11 +22,12 @@ def _load_runtime() -> tuple[dict[str, Any], Any, Any]:
     tools = ToolAdapters().AVAILABLE_TOOLS
     from openkyrozen.agent import delegation_runtime
     from openkyrozen.agent.prompts import _discover_tools
-    from openkyrozen.agent.plan_tools import _update_plan
+    from openkyrozen.agent.plan_tools import _propose_plan, _request_question, _update_plan
     from openkyrozen.agent.runtime import AgentRuntime
     from openkyrozen.tools.catalog import builtin_names
     runtime_functions = {'check_stored_data':_check_stored_data, 'search_memory':_search_memory,
                          'discover_tools':_discover_tools, 'update_plan':_update_plan,
+                         'propose_plan':_propose_plan, 'request_question':_request_question,
                          'read_tool_artifact':AgentRuntime._read_tool_artifact,
                          'read_process':AgentRuntime._read_process,
                          'stop_process':AgentRuntime._stop_process}

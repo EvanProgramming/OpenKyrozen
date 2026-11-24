@@ -16,13 +16,9 @@ from unittest.mock import patch
 if os.environ.get("KYROZEN_ACCEPTANCE_INSTALLED") != "1":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from openkyrozen.app.bootstrap import build_application
-
-_application = build_application(surface="cli")
-
-main = _application.runtime
+from openkyrozen.app.bootstrap import build_application, build_memory
+from openkyrozen.tools import ToolAdapters
 from openkyrozen.security.capabilities import issue_capability_token
-from openkyrozen.persistence.store import EventStore
 from openkyrozen.agent.modes import InteractionController
 from openkyrozen.tasks.engine import TaskManager
 
@@ -139,13 +135,14 @@ if __name__ == "__main__":
         "TaskDone: 3\nDeployment verified.",
     ]
 
-    original = (
-        main.tasks, main._interaction_controller, main.learning_engine,
-        main._get_workspace_root(), main._execution_capability_token,
-    )
     with tempfile.TemporaryDirectory(prefix="openkyrozen-agent-acceptance-") as directory:
         root = Path(directory)
-        store = EventStore(root / "state.sqlite3")
+        application = build_application(
+            surface="cli", memory=build_memory(root / "state.sqlite3", workspace_id="acceptance"),
+            tools=ToolAdapters(root),
+        )
+        main = application.runtime
+        store = main.memory_bank.store
         main.tasks = TaskManager(store, workspace_id="acceptance", session_id="release")
         main._interaction_controller = InteractionController(
             store, workspace_id="acceptance", session_id="release",
@@ -203,9 +200,7 @@ if __name__ == "__main__":
         finally:
             main._approval_callback.reset(approval_token)
             main._stream_event_callback.reset(stream_token)
-            (main.tasks, main._interaction_controller, main.learning_engine,
-             previous_root, main._execution_capability_token) = original
-            main._set_workspace_root(previous_root)
+            application.close()
 
 
 if __name__ == "__main__":

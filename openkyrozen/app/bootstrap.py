@@ -83,16 +83,22 @@ def build_memory(path=None, *, user_id="local", workspace_id="default", session_
     if requested.suffix.lower() != ".sqlite3":
         requested.mkdir(parents=True, exist_ok=True)
         requested /= "openkyrozen.sqlite3"
+    owns_store = store is None
     store = store if store is not None else EventStore(requested)
-    error = None
-    if index is None and os.environ.get("KYROZEN_DISABLE_VECTOR_INDEX", "").lower() not in {"1", "true", "yes"}:
-        try:
-            index = ChromaIndex(Path(os.environ.get("KYROZEN_VECTOR_PATH", str(requested.parent / "chroma_index_v2"))).expanduser())
-        except Exception as exc:
-            error = f"vector index unavailable: {exc}"
-    from openkyrozen.routing import system_one
-    memory = MemoryBank(requested, user_id=user_id, workspace_id=workspace_id, session_id=session_id, file_scope_id=file_scope_id, store=store, index=index)
-    memory.decisions = system_one
-    if error:
-        memory._last_error = error
-    return memory
+    try:
+        error = None
+        if index is None and os.environ.get("KYROZEN_DISABLE_VECTOR_INDEX", "").lower() not in {"1", "true", "yes"}:
+            try:
+                index = ChromaIndex(Path(os.environ.get("KYROZEN_VECTOR_PATH", str(requested.parent / "chroma_index_v2"))).expanduser())
+            except Exception as exc:
+                error = f"vector index unavailable: {exc}"
+        from openkyrozen.routing import system_one
+        memory = MemoryBank(requested, user_id=user_id, workspace_id=workspace_id, session_id=session_id, file_scope_id=file_scope_id, store=store, index=index, owns_store=owns_store)
+        memory.decisions = system_one
+        if error:
+            memory._last_error = error
+        return memory
+    except BaseException:
+        if owns_store:
+            store.close()
+        raise

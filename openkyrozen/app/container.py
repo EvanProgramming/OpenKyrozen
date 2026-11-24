@@ -10,15 +10,22 @@ class Application:
     store: Any
 
     def close(self):
-        coordinator = getattr(self.runtime.subagent_manager, "coordinator", None)
-        if coordinator:
-            coordinator.close()
-        sessions = [self.runtime._default_session, *self.runtime._sessions.values()]
-        for session in sessions:
-            coordinator = getattr(session.subagents, "coordinator", None)
+        try:
+            coordinator = getattr(self.runtime.subagent_manager, "coordinator", None)
             if coordinator:
                 coordinator.close()
-            session.process_manager.close()
-        self.runtime._technology_executor.shutdown(wait=False, cancel_futures=True)
-        for workspace in self.runtime._workspaces.values():
-            workspace.adapters._BROWSER.close_all()
+            sessions = [self.runtime._default_session, *self.runtime._sessions.values()]
+            for session in sessions:
+                coordinator = getattr(session.subagents, "coordinator", None)
+                if coordinator:
+                    coordinator.close()
+                session.process_manager.close()
+            self.runtime._technology_executor.shutdown(wait=False, cancel_futures=True)
+            for workspace in self.runtime._workspaces.values():
+                workspace.adapters._BROWSER.close_all()
+            memory_owner = getattr(self.runtime._default_session, "memory", self.runtime.memory_bank)
+            memory_owner.close()
+        finally:
+            close = getattr(self.store, "close", None)
+            if close is not None:
+                close()

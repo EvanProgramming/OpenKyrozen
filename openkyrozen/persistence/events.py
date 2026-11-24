@@ -21,6 +21,26 @@ class EventsRepository:
             )
         return event_id
 
+    def _append_control_audit(self, event_type: str, payload: Any, *, user_id: str,
+                              workspace_id: str, session_id: str) -> str:
+        """Bound control-path audit contention; cleanup must not wait 30 seconds."""
+        if event_type not in {"process.lifecycle", "turn.effect_uncertain"}:
+            raise ValueError("unsupported control audit event")
+        encoded = self.database._json(payload)
+        if not self.database._lock.acquire(timeout=.1):
+            raise RuntimeError("control audit journal is busy")
+        try:
+            event_id = f"evt_{uuid.uuid4().hex}"
+            with self.database.connection(timeout=.1, busy_timeout_ms=100) as db:
+                db.execute(
+                    "INSERT INTO events(id,event_type,payload,user_id,workspace_id,session_id,task_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (event_id, event_type, encoded, user_id, workspace_id, session_id, None, utc_now()),
+                )
+            return event_id
+        finally:
+            self.database._lock.release()
+
     def conversation_head(self, *, user_id: str, workspace_id: str, session_id: str) -> str | None:
         with self.database.connection() as db:
             row = db.execute(
@@ -245,7 +265,7 @@ class EventsRepository:
                     (user_id, workspace_id, session_id, *relevant_types),
                 ).fetchall()
                 current = None
-                pending = False
+                pending = None
                 for row in rows:
                     event_type = row["event_type"]
                     event_payload = self.database._loads(row["payload"], {})
@@ -253,21 +273,31 @@ class EventsRepository:
                         interaction = event_payload.get("interaction", {})
                         if isinstance(interaction, dict):
                             current = interaction.get("executing_plan")
-                            pending = isinstance(interaction.get("pending_plan"), dict)
+                            restored = interaction.get("pending_plan")
+                            pending = restored if isinstance(restored, dict) else None
                         continue
                     if event_type in accepted_types:
-                        current, pending = event_payload, False
+                        current, pending = event_payload, None
                     elif event_type == "interaction.plan_proposed":
                         if event_payload.get("revision_materiality") != "within_bounds":
-                            pending = True
+                            pending = event_payload
                     elif event_type == "interaction.plan_cancelled":
-                        pending = False
+                        pending = None
                     elif (event_type == "interaction.plan_completed"
                           and event_payload.get("status") in {"completed", "cancelled"}
                           and current and all(event_payload.get(key) == current.get(key)
                                                for key in ("plan_id", "version", "fingerprint"))):
                         current = None
-                if (pending or not current
+                completed_with_revision = (
+                    pending is not None and payload.get("status") == "completed"
+                    and pending.get("revision_materiality") == "material"
+                    and pending.get("plan_id") == payload.get("plan_id")
+                    and pending.get("working_plan_id") == payload.get("working_plan_id")
+                    and type(pending.get("version")) is int
+                    and type(payload.get("version")) is int
+                    and pending["version"] > payload["version"]
+                )
+                if ((pending is not None and not completed_with_revision) or not current
                         or any(current.get(key) != payload.get(key)
                                for key in ("plan_id", "version", "fingerprint"))):
                     raise ValueError("Strategic Plan changed; reload before recording completion")
@@ -286,7 +316,7 @@ class EventsRepository:
 
     def list_events(self, event_type: str | None = None, *, limit: int | None = 100,
                     workspace_id: str = "default", session_id: str | None = None,
-                    user_id: str | None = None) -> list[dict[str, Any]]:
+                    user_id: str | None = None, append_order: bool = False) -> list[dict[str, Any]]:
         clauses = ["workspace_id=?", "event_type NOT LIKE 'conversation.%'"]
         params: list[Any] = [workspace_id]
         if user_id is not None:
@@ -300,9 +330,10 @@ class EventsRepository:
             params.append(session_id)
         if limit is not None:
             params.append(max(1, min(limit, 10000)))
+        order = "rowid DESC" if append_order else "created_at DESC, rowid DESC"
         with self.database.connection() as db:
             rows = db.execute(
-                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, rowid DESC" + (" LIMIT ?" if limit is not None else ""),
+                f"SELECT * FROM events WHERE {' AND '.join(clauses)} ORDER BY {order}" + (" LIMIT ?" if limit is not None else ""),
                 params,
             ).fetchall()
         return [dict(row, payload=self.database._loads(row["payload"], {})) for row in rows]

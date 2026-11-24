@@ -22,6 +22,15 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def read_events(path):
+    try:
+        contents = path.read_bytes()
+    except FileNotFoundError:
+        return []
+    # The last bytes can be written concurrently. A newline commits the record.
+    return [json.loads(line) for line in contents.split(b"\n")[:-1] if line.strip()]
+
+
 def backend_fixture():
     sys.path.insert(0, str(ROOT))
     from openkyrozen.app.bootstrap import build_application
@@ -169,9 +178,7 @@ def acceptance(binary: Path):
                     os.write(master, b'\x1b]11;rgb:0000/0000/0000\x1b\\')
 
         def events():
-            if not events_file.exists():
-                return []
-            return [json.loads(line) for line in events_file.read_text().splitlines() if line]
+            return read_events(events_file)
 
         def wait(predicate, label, timeout=30):
             deadline = time.monotonic() + timeout
@@ -198,10 +205,14 @@ def acceptance(binary: Path):
             return sum(r.get('event') == 'response' for r in rows)
 
         def submit(text):
-            count = response_count(events())
+            rows = events()
+            count = response_count(rows)
+            ready_count = sum(r.get('event') == 'status' and r.get('state') == 'ready' for r in rows)
             send(text.encode() + b'\r')
             wait(lambda rows: response_count(rows) > count, 'chat response')
-            wait(lambda rows: rows[-1].get('event') != 'status' or not rows[-1].get('busy'), 'turn completion')
+            if not text.startswith('/'):
+                wait(lambda rows: sum(r.get('event') == 'status' and r.get('state') == 'ready'
+                                      for r in rows) > ready_count, 'turn completion')
 
         try:
             wait(prompt('onboarding'), 'onboarding')
@@ -258,7 +269,9 @@ def acceptance(binary: Path):
             drain(0.3)
             send(b'q')
             drain(0.5)
-            count = response_count(events())
+            rows = events()
+            count = response_count(rows)
+            ready_count = sum(r.get('event') == 'status' and r.get('state') == 'ready' for r in rows)
             send(b'cancel audit\r')
             wait(lambda rows: any(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'running'
                                  and r.get('agent', {}).get('assignment', {}).get('objective') == 'wait-for-cancellation' for r in rows), 'cancellable running agent')
@@ -268,6 +281,8 @@ def acceptance(binary: Path):
             wait(lambda rows: any(r.get('event') == 'subagent' and r.get('agent', {}).get('status') == 'cancelled' for r in rows), 'agent cancellation')
             send(b'q')
             wait(lambda rows: response_count(rows) > count, 'cancelled work retained in final report')
+            wait(lambda rows: sum(r.get('event') == 'status' and r.get('state') == 'ready'
+                                  for r in rows) > ready_count, 'cancelled turn completion')
             for width, height in ((60, 20), (160, 45), (80, 24)):
                 previous = len(terminal)
                 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
@@ -277,6 +292,8 @@ def acceptance(binary: Path):
             assert 'APPROVAL REQUIRED' in plain and 'Choose a provider' in plain
             assert 'first conversation' in plain and 'second conversation' in plain
             assert '2.0.5 available' in plain and 'Run /update' in plain
+            send(b'\x1b')  # Dismiss the expected error/agent dialog before the next command.
+            drain(0.3)
             send(b'/update\r')
             wait(lambda rows: any(r.get('event') == 'restart' for r in rows), 'update command requests restart')
             process.wait(timeout=10)
@@ -285,7 +302,10 @@ def acceptance(binary: Path):
             print('TUI acceptance passed: startup update notice and command, onboarding, chat isolation, approvals, sub-agent updates/inspection/scrolling/cancellation, and 3 terminal sizes.')
         finally:
             if process.poll() is None:
-                process.kill()
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 process.wait()
             os.close(master)
 

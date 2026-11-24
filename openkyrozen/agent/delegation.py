@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import random
+import re
 import threading
 import time
 import uuid
@@ -19,6 +20,12 @@ from openkyrozen.tools.catalog import builtin_names
 TOOLS = builtin_names("orchestration")
 TERMINAL = {"succeeded", "unverified", "failed", "blocked", "cancelled", "interrupted"}
 REPORT_LISTS = ("findings", "evidence", "artifacts", "checks", "uncertainties", "suggested_followups")
+_DELEGATED_COMMAND_OUTPUT = re.compile(
+    r"\b(?:(?:test\s+)?commands?(?:\s*\(s\))?\s+(?:(?:were|it)\s+)?(?:run|executed)\b"
+    r"[^.!?\n]{0,80}\b(?:output|exit\s+(?:code|status))"
+    r"|(?<!expected )(?<!predicted )current\s+(?:test\s+)?pass\s*/\s*fail\s+status"
+    r"|whether (?:the (?:test|suite|command)s?|it) (?:currently )?passes? or fails?)\b", re.IGNORECASE,
+)
 GUIDANCE = '''Delegate automatically when independent work can run in parallel or a specialist can
 materially improve the result. Do not delegate greetings, single lookups, or duplicate work.
 The user never needs to mention agents, parallelism, or verification. Detect the need from the work.
@@ -68,7 +75,11 @@ def assignment_key(brief):
     return brief["objective"].strip().lower(), tuple(sorted(brief["scope"]))
 
 
-def report(value, *, review=False):
+def broad_scope(root, paths):
+    return len(paths) > 1 or "." in paths or any((root / path).is_dir() for path in paths)
+
+
+def _report_object(value):
     if isinstance(value, str):
         value = value.strip()
         if value.startswith("```"):
@@ -76,6 +87,11 @@ def report(value, *, review=False):
         value = json.loads(value)
     if not isinstance(value, dict):
         raise ValueError("Result must be a JSON object")
+    return value
+
+
+def report(value, *, review=False):
+    value = _report_object(value)
     if review:
         if value.get("verdict") not in {"verified", "changes_requested", "unverifiable"}:
             raise ValueError("Review requires a valid verdict")
@@ -89,6 +105,48 @@ def report(value, *, review=False):
     if any(not isinstance(value.get(key), list) for key in keys):
         raise ValueError("Result requires arrays: " + ", ".join(keys))
     return value
+
+
+def complete_source_reads(records, root):
+    """Index small, complete native source reads by their workspace-relative path."""
+    from openkyrozen.agent.subagent_runtime import _receipt_argument
+
+    reads = {}
+    for record in records:
+        if (record.get("action") != "read_file" or record.get("success") is not True
+                or record.get("authorized") is not True or record.get("call_id_source") != "native"):
+            continue
+        observed = (record.get("verification") or {}).get("observed") or {}
+        data = record.get("result_data")
+        if (observed.get("complete_file") is not True or not isinstance(data, dict)
+                or not isinstance(data.get("content"), str)):
+            continue
+        raw = _receipt_argument(record.get("args"), "path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        path = (root / raw).resolve()
+        if path.is_relative_to(root):
+            reads[path.relative_to(root).as_posix()] = record
+    return reads
+
+
+def focused_review_report(value, sources):
+    """Bind a focused verdict to fresh source receipts from its own reviewer."""
+    verdict = _report_object(value)
+    findings = verdict.get("findings", [])
+    if isinstance(findings, str):
+        findings = [findings] if findings.strip() else []
+    result = {
+        "verdict": verdict.get("verdict"),
+        "summary": verdict.get("summary"),
+        "findings": findings,
+        "evidence": [{"receipt_id": source["receipt_id"], "path": source["path"]}
+                     for source in sources],
+    }
+    report(result, review=True)
+    if result["verdict"] == "verified" and not sources:
+        result.update(verdict="unverifiable", summary="Reviewer has no independent source receipts")
+    return result
 
 
 class WorkspaceAccess:
@@ -172,6 +230,10 @@ class WorkspaceAccess:
                 self.condition.notify_all()
 
 
+class DelegationRequestError(ValueError):
+    """Known assignment rejection before any agent starts."""
+
+
 class DelegationBudget:
     """Reserve a bounded share of one parent turn for child and review work."""
 
@@ -194,7 +256,7 @@ class DelegationBudget:
         amount = self.CHILD_RESERVATION + (self.REVIEW_RESERVATION if review else 0)
         with self._lock:
             if run_id in self._commitments or amount > self.TURN_LIMIT - sum(self._commitments.values()):
-                raise ValueError("Delegation budget is unavailable for this assignment")
+                raise DelegationRequestError("Delegation budget is unavailable for this batch. Use fewer assignments.")
             self._commitments[run_id] = amount
 
     def settle(self, run_id: str, *, cost_picos: int | None) -> None:
@@ -333,72 +395,77 @@ class Delegation:
 
     def _brief(self, brief):
         if not isinstance(brief, dict):
-            raise ValueError("Assignment must be an object")
+            raise DelegationRequestError("Assignment must be an object")
         for key in ("objective", "context", "reason"):
             if not isinstance(brief.get(key), str) or not brief[key].strip():
-                raise ValueError("Assignment requires " + key)
+                raise DelegationRequestError("Assignment requires " + key)
         for key in ("scope", "dependencies", "acceptance", "deliverables"):
             if not isinstance(brief.get(key), list) or any(not isinstance(x, str) or not x.strip() for x in brief[key]):
-                raise ValueError("Assignment requires a string array: " + key)
+                raise DelegationRequestError("Assignment requires a string array: " + key)
         if not brief["acceptance"] or not brief["deliverables"]:
-            raise ValueError("Acceptance and deliverables cannot be empty")
-        if brief.get("profile", "researcher") not in self.profiles:
-            raise ValueError("Unknown sub-agent profile")
+            raise DelegationRequestError("Acceptance and deliverables cannot be empty")
+        profile = self.profiles.get(brief.get("profile", "researcher"))
+        if profile is None:
+            raise DelegationRequestError("Unknown sub-agent profile")
+        if profile.capabilities == "readonly" and any(
+                _DELEGATED_COMMAND_OUTPUT.search(text)
+                for text in (*brief["acceptance"], *brief["deliverables"])):
+            raise DelegationRequestError(
+                "A read-only specialist cannot run tests or capture command output. "
+                "Assign source findings and a recommended test command. Run it in the main turn.")
         if brief.get("risk", "normal") not in {"low", "normal", "high"}:
-            raise ValueError("risk must be low, normal, or high")
+            raise DelegationRequestError("risk must be low, normal, or high")
         for key in ("provider", "model", "custom_profile", "id"):
             if key in brief and (not isinstance(brief[key], str) or not brief[key].strip()):
-                raise ValueError(key + " must be nonempty text")
+                raise DelegationRequestError(key + " must be nonempty text")
         if "task_id" in brief and (not isinstance(brief["task_id"], str) or not brief["task_id"].strip()):
-            raise ValueError("task_id must be nonempty text")
+            raise DelegationRequestError("task_id must be nonempty text")
         brief = copy.deepcopy(brief)
         paths = []
         for path in brief["scope"]:
             resolved = (self.root / path).resolve()
             if not resolved.is_relative_to(self.root):
-                raise ValueError("Assignment scope is outside the workspace")
+                raise DelegationRequestError("Assignment scope is outside the workspace")
             paths.append(str(resolved.relative_to(self.root)))
         brief["scope"] = list(dict.fromkeys(paths))
         return brief
 
     def _requires_review(self, brief):
         profile = self.profiles[brief.get("profile", "researcher")]
-        broad_scope = len(brief["scope"]) > 1 or "." in brief["scope"] or any(
-            (self.root / path).is_dir() for path in brief["scope"]
-        )
-        return profile.capabilities != "readonly" or broad_scope or brief.get("risk", "normal") == "high"
+        return (profile.capabilities != "readonly" or broad_scope(self.root, brief["scope"])
+                or brief.get("risk", "normal") == "high")
 
     def spawn(self, assignments, *, budget=None):
         if not isinstance(assignments, list) or not assignments:
-            raise ValueError("assignments must be a nonempty array")
+            raise DelegationRequestError("assignments must be a nonempty array")
         budget = budget or DelegationBudget()
         briefs = [self._brief(item) for item in assignments]
         with self.lock:
             ids = [b.get("id", uuid.uuid4().hex) for b in briefs]
             if len(set(ids)) != len(ids):
-                raise ValueError("Duplicate assignment IDs")
+                raise DelegationRequestError("Duplicate assignment IDs")
             mapping = {key: "subagent_" + uuid.uuid4().hex for key in ids}
             known = set(self.runs) | set(mapping)
             signatures = set()
             active_keys = {assignment_key(run["assignment"]) for run in self.runs.values() if run["status"] not in TERMINAL}
             for key, brief in zip(ids, briefs):
                 if key in self.runs or any(key == r.get("assignment_id") for r in self.runs.values()):
-                    raise ValueError("Assignment ID already exists")
+                    raise DelegationRequestError("Assignment ID already exists")
                 if any(dep not in known for dep in brief["dependencies"]):
-                    raise ValueError("Unknown dependency")
+                    raise DelegationRequestError("Unknown dependency")
                 signature = json.dumps([brief["objective"].strip().lower(), sorted(brief["scope"]), brief["context"]])
                 if assignment_key(brief) in active_keys:
-                    raise ValueError("Duplicate active assignment")
+                    raise DelegationRequestError("Duplicate active assignment")
                 active_keys.add(assignment_key(brief))
                 if signature in signatures or any(r["signature"] == signature and r["status"] not in {"failed", "blocked", "cancelled", "interrupted"} for r in self.runs.values()):
-                    raise ValueError("Duplicate exploration requires new evidence and a distinct objective")
+                    raise DelegationRequestError("Duplicate exploration requires new evidence and a distinct objective")
                 signatures.add(signature)
             edges = {key: set(b["dependencies"]) & set(mapping) for key, b in zip(ids, briefs)}
             pending = set(edges)
             while pending:
                 ready = {key for key in pending if not edges[key] & pending}
                 if not ready:
-                    raise ValueError("Cyclic dependencies")
+                    raise DelegationRequestError("Cyclic dependencies")
                 pending -= ready
             reserved = []
             try:
@@ -612,9 +679,10 @@ class Delegation:
                 self._schedule()
 
     def _verify_read_only_result(self, run, worker_report, result):
+        from openkyrozen.agent.subagent_runtime import _receipt_argument
+
         if worker_report["status"] != "completed" or worker_report["artifacts"]:
             return False
-        receipts = [item for item in result.get("tool_records", []) if item.get("success")]
         scopes = [(self.root / value).resolve() for value in run["assignment"]["scope"]]
         def in_scope(raw):
             try:
@@ -623,13 +691,17 @@ class Delegation:
                 return any(path == scope or path.is_relative_to(scope) for scope in scopes)
             except (OSError, TypeError, ValueError):
                 return False
-        inspected = {item.get("receipt_id") for item in receipts if item.get("action") == "read_file"
-                     and in_scope((item.get("args") or {}).get("path") if isinstance(item.get("args"), dict) else
-                                  str(item.get("args", "")).split("|", 1)[0])}
+        inspected = {
+            item["receipt_id"] for item in result.get("tool_records", [])
+            if item.get("success") is True and item.get("action") == "read_file"
+            and isinstance(item.get("receipt_id"), str) and item["receipt_id"]
+            and in_scope(_receipt_argument(item.get("args"), "path"))
+        }
         evidence = worker_report["evidence"]
         if not inspected or not evidence or not worker_report.get("checks"):
             return False
-        return all(isinstance(item, dict) and item.get("receipt_id") in inspected for item in evidence)
+        return all(isinstance(item, dict) and isinstance(item.get("receipt_id"), str)
+                   and item["receipt_id"] in inspected for item in evidence)
 
     def _inspect_artifacts(self, run, review_result):
         findings, checks = [], []
@@ -666,7 +738,8 @@ class Delegation:
             elif not inspected:
                 findings.append("Artifact was not independently read: " + reference)
             else:
-                with self.access.acquire(str(path), self.cancelled[run["run_id"]].is_set, reading=True):
+                run_id = run["run_id"]
+                with self.access.acquire(str(path), self.cancelled[run_id].is_set, owner=run_id, reading=True):
                     with path.open("rb") as source:
                         check["sha256"] = hashlib.file_digest(source, "sha256").hexdigest()
                 if isinstance(artifact, dict) and artifact.get("sha256") and artifact["sha256"] != check["sha256"]:
@@ -700,10 +773,17 @@ class Delegation:
                                   if review.get("session_id"))
             for child_session in child_sessions:
                 from .conversation import ConversationHistory
-                child_messages = ConversationHistory(
+                history = ConversationHistory(
                     self.memory.store, user_id=self.memory.user_id,
-                    workspace_id=self.memory.file_scope_id, session_id=child_session,
-                ).display_messages()
+                    workspace_id=self.runs[run_id].get("conversation_workspace_id", self.memory.file_scope_id),
+                    session_id=child_session,
+                )
+                if "conversation_workspace_id" not in self.runs[run_id] and history.head is None:
+                    history = ConversationHistory(
+                        self.memory.store, user_id=self.memory.user_id,
+                        workspace_id=self.memory.workspace_id, session_id=child_session,
+                    )
+                child_messages = history.display_messages()
                 if child_session in {run_id, self.runs[run_id].get("budget_id", run_id)}:
                     messages = child_messages
                 else:
@@ -715,8 +795,8 @@ class Delegation:
                 if event["payload"].get("run_id") == run_id]
             return {**self._safe(self.runs[run_id]), "messages": messages, "review_messages": review_messages, "receipts": receipts}
 
-    def wait(self, run_ids=None, timeout=30):
-        deadline = time.monotonic() + max(0, min(float(timeout), 60))
+    def wait(self, run_ids=None, timeout=30, *, cancelled=None):
+        deadline = time.monotonic() + max(0, min(float(timeout), 120))
         with self.changed:
             selected = list(self.runs) if run_ids is None else run_ids
             if not isinstance(selected, list) or any(key not in self.runs for key in selected):
@@ -725,9 +805,9 @@ class Delegation:
                       (self.runs[key]["status"] != "cancelled" and key in self.futures and not self.futures[key].done())
                       for key in selected):
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                if remaining <= 0 or (cancelled is not None and cancelled.is_set()):
                     break
-                self.changed.wait(remaining)
+                self.changed.wait(min(0.25, remaining) if cancelled is not None else remaining)
             return copy.deepcopy([self.runs[key] for key in selected])
 
     def cancel(self, run_id):

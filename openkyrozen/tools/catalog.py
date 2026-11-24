@@ -5,6 +5,8 @@ import copy
 # name, capability, side effects, owner, risk, parallel safety, aliases, conversion fields, argument aliases, confirmation surfaces
 _ROWS = (
     ('update_plan', 'write', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
+    ('propose_plan', 'read', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
+    ('request_question', 'read', 'internal_write', 'runtime', 'normal', False, (), (), (), ()),
     ('spawn_agents', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
     ('send_subagent', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
     ('list_subagents', 'read', 'orchestration', 'orchestration', 'normal', False, (), (), (), ()),
@@ -135,28 +137,85 @@ _SCHEMAS = {'read_file': {'properties': {'path': {'type': 'string'}},
                    'type': 'object',
                    'additionalProperties': False}}
 
+_CONTROL_VERIFICATION = {'type':'object','properties':{
+    'action':{'type':'string','minLength':1},
+    'arguments':{'type':'object','properties':{},'additionalProperties':True},
+    'expect':{'type':'object','properties':{'equals':{'type':'string'},'contains':{'type':'string','minLength':1}},
+              'minProperties':1,'maxProperties':1,'additionalProperties':False},
+},'required':['action','arguments'],'additionalProperties':False}
+_READ_CRITERION = {'type':'object','properties':{
+    'criterion':{'type':'string','minLength':1},
+    'verification':{**_CONTROL_VERIFICATION,'properties':{
+        **_CONTROL_VERIFICATION['properties'],'action':{'type':'string','enum':['read_file']},
+        'expect':{'anyOf':[
+            {'type':'object','properties':{name: predicate},'required':[name],'additionalProperties':False}
+            for name, predicate in {
+                **_CONTROL_VERIFICATION['properties']['expect']['properties'],
+                'complete':{'type':'boolean','enum':[True],
+                            'description':'For ordinary Working Plans, verify a complete read of one exact path.'},
+            }.items()
+        ]}},
+        'required':['action','arguments','expect']},
+},'required':['criterion','verification'],'additionalProperties':False}
+_ACTION_CRITERION = {**_READ_CRITERION, 'properties':{
+    **_READ_CRITERION['properties'], 'verification':{
+        **_CONTROL_VERIFICATION, 'properties':{
+            'action':{'type':'string','enum':['run_cmd','git_show']},
+            'arguments':_CONTROL_VERIFICATION['properties']['arguments'],
+        },
+    },
+}}
+_WORKING_ACCEPTANCE = {'anyOf':[
+    {'type':'array','items':{'type':'string','minLength':1}},
+    {'type':'array','minItems':1,'items':{'anyOf':[_READ_CRITERION, _ACTION_CRITERION]}},
+]}
+
 _PLAN_EXECUTION_SCHEMA = {'type':'object','properties':{
     'action': {'type':'string','minLength':1},
     'arguments': {'type':'object','properties':{},'additionalProperties':True},
 },'required':['action','arguments'],'additionalProperties':False}
 _PLAN_TASK_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},
-    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
-    'execution': _PLAN_EXECUTION_SCHEMA,
+    'execution': {'anyOf': [_PLAN_EXECUTION_SCHEMA, {'type':'null'}],
+                  'description':'Omit or use null when the new task has no declared execution tool.'},
 },'required':['description','acceptance'],'additionalProperties':False}
 _PLAN_UPDATE_FIELDS_SCHEMA = {'type':'object','properties':{
     'description': {'type':'string','minLength':1},
-    'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+    'acceptance': _WORKING_ACCEPTANCE,
     'dependencies': {'type':'array','items':{'type':'string','minLength':1}},
     'priority': {'type':'integer'},
     'execution': _PLAN_EXECUTION_SCHEMA,
 },'minProperties':1,'additionalProperties':False}
+_EXPECTED_COMMAND_EXIT_CODE = {'type':'integer','minimum':1,'maximum':255,
+    'description':'For an expected failure only. Omit for a command that must exit zero.'}
 _PLAN_OPERATION_SCHEMAS = [
     {'type':'object','properties':{'op':{'type':'string','enum':['add']},
-        'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA},
+        'ref':{'type':'string','minLength':1},'task':_PLAN_TASK_SCHEMA,
+        'anchor':{'type':'string','minLength':1,'description':'Existing approved objective task ID for in-scope strategy work.'}},
         'required':['op','ref','task'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['add_read_check'],
+        'description':'Add an ordinary task verified by a complete read of one exact file.'},
+        'ref':{'type':'string','minLength':1},'path':{'type':'string','minLength':1}},
+        'required':['op','ref','path'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['add_command_check'],
+        'description':'Add an ordinary task verified by an exact foreground command.'},
+        'ref':{'type':'string','minLength':1},'description':{'type':'string','minLength':1},
+        'command':{'type':'string','minLength':1},
+        'expected_exit_code':_EXPECTED_COMMAND_EXIT_CODE},
+        'required':['op','ref','description','command'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['bind_command_check'],
+        'description':'Bind an exact command to the sole prose criterion of an ordinary task before it runs any work.'},
+        'task':{'type':'string','minLength':1},'command':{'type':'string','minLength':1},
+        'expected_exit_code':_EXPECTED_COMMAND_EXIT_CODE},
+        'required':['op','task','command'],'additionalProperties':False},
+    {'type':'object','properties':{'op':{'type':'string','enum':['replace_command_check'],
+        'description':'Replace and start an unused complete-read check or a check whose verified command failed.'},
+        'task':{'type':'string','minLength':1},'ref':{'type':'string','minLength':1},
+        'command':{'type':'string','minLength':1,'description':'The exact foreground verification command.'}},
+        'required':['op','task','ref','command'],'additionalProperties':False},
     {'type':'object','properties':{'op':{'type':'string','enum':['update']},
         'task':{'type':'string','minLength':1},'fields':_PLAN_UPDATE_FIELDS_SCHEMA},
         'required':['op','task','fields'],'additionalProperties':False},
@@ -189,33 +248,59 @@ _PLAN_OPERATION_SCHEMAS = [
     *[{'type':'object','properties':{'op':{'type':'string','enum':[op]},
         'task':{'type':'string','minLength':1},'reason':{'type':'string','minLength':1}},
         'required':['op','task','reason'],'additionalProperties':False} for op in ('block','unblock')],
+    *[{'type':'object','properties':{'op':{'type':'string','enum':[op]},
+        'task':{'type':'string','minLength':1}},
+        'required':['op','task'],'additionalProperties':False} for op in ('start','suggest_complete')],
 ]
+
+_ASSIGNMENT_TEXT = {"type": "string", "minLength": 1}
+_ASSIGNMENT_LIST = {"type": "array", "items": _ASSIGNMENT_TEXT}
+_SPAWN_ASSIGNMENT = {
+    "type": "object",
+    "properties": {
+        "objective": _ASSIGNMENT_TEXT,
+        "context": _ASSIGNMENT_TEXT,
+        "reason": _ASSIGNMENT_TEXT,
+        "scope": {**_ASSIGNMENT_LIST, "description": "Exact workspace paths when known. Use . only for whole-workspace work."},
+        "dependencies": {**_ASSIGNMENT_LIST, "description": "Use [] for an independent assignment."},
+        "acceptance": {**_ASSIGNMENT_LIST, "minItems": 1,
+                       "description": "Use evidence the assigned role can collect. Keep running tests and capturing command output in the main turn."},
+        "deliverables": {**_ASSIGNMENT_LIST, "minItems": 1},
+        "profile": {**_ASSIGNMENT_TEXT, "description": "Use researcher for source and test inspection or coder for scoped edits. Researchers have no shell."},
+        "risk": {"type": "string", "enum": ["low", "normal", "high"]},
+        **{field: _ASSIGNMENT_TEXT for field in ("id", "task_id", "provider", "model", "custom_profile")},
+    },
+    "required": ["objective", "context", "reason", "scope", "dependencies", "acceptance", "deliverables"],
+    "additionalProperties": False,
+}
 
 _OBJECT_FIELDS = {
     'update_plan': {'complexity': {'type':'string','enum':['simple','medium','complex']},
-                    'plan_id': {'type':'string','minLength':1},
+                    'plan_id': {'type':'string','minLength':1,'description':'Runtime-returned existing plan ID. Omit when creating a new plan.'},
                     'expected_revision': {'type':'integer','minimum':0},
-                    'reason': {'type':'string','minLength':1},
+                    'reason': {'type':'string','minLength':1,
+                               'description':'Rationale for plan edits; omit for completed-plan confirmation.'},
                     'operations': {'type':'array','items':{'anyOf':_PLAN_OPERATION_SCHEMAS}},
                     'tasks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
-                        'id': {'type':'string','minLength':1},
+                        'id': {'type':'string','minLength':1,'description':'Existing runtime task ID only. Omit for new tasks; use operations.add.ref for local references.'},
                         'description': {'type':'string','minLength':1},
-                        'acceptance': {'type':'array','items':{'type':'string','minLength':1}},
+                        'acceptance': _WORKING_ACCEPTANCE,
                         'execution': {'type':'object','properties':{
                             'action': {'type':'string','minLength':1},
                             'arguments': {'type':'object','properties':{},'additionalProperties':True},
                         },'required':['action','arguments'],'additionalProperties':False},
                     },'required':['description','acceptance'],'additionalProperties':False}}},
-    'spawn_agents': {'assignments': {'type':'array','items':{'type':'object','properties':{},'additionalProperties':True}}},
+    'spawn_agents': {'assignments': {'type': 'array', 'minItems': 1, 'items': _SPAWN_ASSIGNMENT}},
     'send_subagent': {'run_id': {'type':'string'}, 'assignment': {'type':'object','properties':{},'additionalProperties':True}},
-    'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':60}},
+    'list_subagents': {'run_id': {'type':'string'}}, 'wait_subagents': {'run_ids': {'type':'array','items':{'type':'string'}}, 'timeout': {'type':'number','minimum':0,'maximum':120}},
     'cancel_subagent': {'run_id': {'type':'string'}},
     'check_stored_data': {'category': {'type':'string'}}, 'search_memory': {'query': {'type':'string','minLength':1}},
     'discover_tools': {'query': {'type':'string'}, 'names': {'type':'array','items':{'type':'string'}}},
     'search_files': {'query': {'type':'string'}, 'path': {'type':'string'}, 'glob': {'type':'string'}, 'limit': {'type':'integer','minimum':1,'maximum':100}},
     'calculate': {'expression': {'type':'string','minLength':1,'maxLength':4000}},
     'read_file': {'path': {'type':'string'}, 'start_line': {'type':'integer','minimum':1}, 'max_lines': {'type':'integer','minimum':1}, 'max_chars': {'type':'integer','minimum':1}},
-    'edit_file': {'path': {'type':'string'}, 'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'}, 'expected_sha256': {'type':'string'}},
+    'edit_file': {'path': {'type':'string'}, 'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'},
+                  'expected_sha256': {'type':'string','minLength':64,'maxLength':64,'pattern':'^[0-9a-f]{64}$'}},
     'apply_patch': {'path': {'type':'string'}, 'expected_sha256': {'type':'string','pattern':'^[0-9a-fA-F]{64}$'},
                     'hunks': {'type':'array','minItems':1,'items':{'type':'object','properties':{
                         'old_text': {'type':'string','minLength':1}, 'new_text': {'type':'string'},
@@ -258,7 +343,7 @@ for _name, _properties in _OBJECT_FIELDS.items():
         'read_webpage': ['url'], 'git_clone': ['url'], 'analyze_remote_repo': ['url'],
         'browser_open': ['url'], 'browser_snapshot': ['session_id'],
         'browser_click': ['session_id', 'selector'], 'browser_type': ['session_id', 'selector', 'text'],
-        'browser_close': ['session_id'], 'send_subagent': ['run_id', 'assignment'],
+        'browser_close': ['session_id'], 'spawn_agents': ['assignments'], 'send_subagent': ['run_id', 'assignment'],
         'cancel_subagent': ['run_id'], 'search_memory': ['query'], 'calculate': ['expression'],
         'edit_file': ['path', 'old_text', 'new_text', 'expected_sha256'],
         'apply_patch': ['path', 'expected_sha256', 'hunks'],
@@ -275,6 +360,54 @@ _SCHEMAS['update_plan']['anyOf'] = [
                                       for key in ('complexity', 'tasks')},
      'required': ['complexity', 'tasks'], 'additionalProperties': False},
 ]
+
+_TEST_REVIEW_SCHEMA = {
+    'type': 'object', 'additionalProperties': False, 'required': ['scope', 'focus'],
+    'properties': {
+        'scope': {**_ASSIGNMENT_LIST, 'minItems': 1,
+                  'description': 'Workspace paths. Use . if the tests have yet to be located.'},
+        'focus': {**_ASSIGNMENT_TEXT, 'maxLength': 1000,
+                  'description': 'The behavior or contract to inspect in the tests.'},
+    },
+}
+_spawn_schema = _SCHEMAS['spawn_agents']
+_SCHEMAS['spawn_agents'] = {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {**_spawn_schema['properties'], 'test_review': _TEST_REVIEW_SCHEMA},
+    'anyOf': [_spawn_schema, {'required': ['test_review'], 'properties': {'test_review': _TEST_REVIEW_SCHEMA},
+                             'type': 'object', 'additionalProperties': False}],
+}
+
+_SCHEMAS['propose_plan'] = {'type':'object','properties':{
+    'title':{'type':'string','minLength':1,'maxLength':120},
+    'summary':{'type':'string','minLength':1,'maxLength':1000},
+    'assumptions':{'type':'array','maxItems':10,'items':{'type':'string'}},
+    'bounds':{'type':'object','properties':{
+        'workspace_paths':{'type':'array','minItems':1,'items':{'type':'string','minLength':1}},
+        'capabilities':{'type':'array','minItems':1,'items':{'type':'string'}},
+        'effects':{'type':'array','minItems':1,'items':{'type':'string'}},
+        'risk_ceiling':{'type':'string','enum':['normal','high']},
+    },'required':['workspace_paths','capabilities','effects','risk_ceiling'],'additionalProperties':False},
+    'steps':{'type':'array','minItems':1,'maxItems':10,'items':{'type':'object','properties':{
+        'id':{'type':'string','minLength':1,'maxLength':64},
+        'title':{'type':'string','minLength':1},'description':{'type':'string','minLength':1},
+        'acceptance':{'type':'array','minItems':1,'maxItems':5,'items':{'anyOf':[
+            {'type':'string','minLength':1},
+            {'type':'object','properties':{'criterion':{'type':'string','minLength':1},
+                'verification':_CONTROL_VERIFICATION},'required':['criterion','verification'],'additionalProperties':False},
+        ]}},'execution':_PLAN_EXECUTION_SCHEMA,
+    },'required':['id','title','description','acceptance'],'additionalProperties':False}},
+},'required':['title','summary','bounds','steps'],'additionalProperties':False}
+_SCHEMAS['request_question'] = {'type':'object','properties':{
+    'questions':{'type':'array','minItems':1,'maxItems':3,'items':{'type':'object','properties':{
+        'id':{'type':'string','minLength':1},'header':{'type':'string','minLength':1},
+        'prompt':{'type':'string','minLength':1},
+        'choices':{'type':'array','minItems':2,'maxItems':3,'items':{'type':'object','properties':{
+            'id':{'type':'string','minLength':1},'label':{'type':'string','minLength':1},
+            'description':{'type':'string'},
+        },'required':['id','label'],'additionalProperties':False}},
+    },'required':['id','header','prompt','choices'],'additionalProperties':False}},
+},'required':['questions'],'additionalProperties':False}
 
 
 
@@ -298,7 +431,7 @@ def builtin_metadata(name):
                       'analyze_remote_repo', 'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_close',
                       'github_status', 'github_read'}:
             effects = 'remote'
-        elif name in {'update_plan', 'graph_refresh', 'spawn_agents', 'send_subagent', 'list_subagents',
+        elif name in {'update_plan', 'propose_plan', 'request_question', 'graph_refresh', 'spawn_agents', 'send_subagent', 'list_subagents',
                       'wait_subagents', 'cancel_subagent'}:
             effects = 'internal'
         else:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from datetime import datetime, timedelta
 import io
 import hashlib
 from importlib import metadata
@@ -17,11 +19,318 @@ import sys
 import tempfile
 import time
 import unittest
-import psutil
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
 from test_durable_tasks_gateway import DurableTaskGatewayTests
+
+
+def _parse_process_table(output: str) -> dict[int, int]:
+    parents = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 2:
+            try:
+                parents[int(fields[0])] = int(fields[1])
+            except ValueError:
+                continue
+    return parents
+
+
+def _process_output(command: list[str]) -> tuple[str, int]:
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = process.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
+    return stdout, process.pid
+
+
+class _WindowsProcessTable(dict):
+    def __init__(self, rows, probe_pid):
+        self.probe_pid = probe_pid
+        self.probe = rows.pop(probe_pid, None)
+        super().__init__(rows)
+
+
+def _windows_creation_date(ticks: int) -> str:
+    seconds, fraction = divmod(ticks, 10_000_000)
+    date = datetime(1601, 1, 1) + timedelta(seconds=seconds)
+    return f'{date.isoformat(timespec="seconds")}.{fraction:07d}Z'
+
+
+def _windows_kernel():
+    import ctypes
+    from ctypes import wintypes as win
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [win.DWORD, win.BOOL, win.DWORD]
+    kernel.OpenProcess.restype = win.HANDLE
+    kernel.CloseHandle.argtypes = [win.HANDLE]
+    kernel.CloseHandle.restype = win.BOOL
+    return kernel
+
+
+def _windows_process_entries(kernel):
+    import ctypes
+    from ctypes import wintypes as win
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [('dwSize', win.DWORD), ('cntUsage', win.DWORD), ('th32ProcessID', win.DWORD),
+                    ('th32DefaultHeapID', ctypes.c_size_t), ('th32ModuleID', win.DWORD),
+                    ('cntThreads', win.DWORD), ('th32ParentProcessID', win.DWORD), ('pcPriClassBase', win.LONG),
+                    ('dwFlags', win.DWORD), ('szExeFile', win.WCHAR * 260)]
+
+    entry_pointer = ctypes.POINTER(ProcessEntry)
+    kernel.CreateToolhelp32Snapshot.argtypes = [win.DWORD, win.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = win.HANDLE
+    kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [win.HANDLE, entry_pointer]
+    kernel.Process32FirstW.restype = kernel.Process32NextW.restype = win.BOOL
+    snapshot = kernel.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    if snapshot == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    entry = ProcessEntry(dwSize=ctypes.sizeof(ProcessEntry))
+    try:
+        if not kernel.Process32FirstW(snapshot, ctypes.byref(entry)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        while True:
+            yield entry
+            if not kernel.Process32NextW(snapshot, ctypes.byref(entry)):
+                if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
+                    raise ctypes.WinError(ctypes.get_last_error())
+                break
+    finally:
+        kernel.CloseHandle(snapshot)
+
+
+def _windows_process_table() -> _WindowsProcessTable:
+    import ctypes
+    from ctypes import wintypes as win
+
+    kernel = _windows_kernel()
+    filetime = ctypes.POINTER(win.FILETIME)
+    kernel.GetSystemTimePreciseAsFileTime.argtypes = [filetime]
+    kernel.GetSystemTimePreciseAsFileTime.restype = None
+    kernel.GetProcessTimes.argtypes = [win.HANDLE, filetime, filetime, filetime, filetime]
+    kernel.GetProcessTimes.restype = win.BOOL
+
+    def ticks(value):
+        return (value.dwHighDateTime << 32) | value.dwLowDateTime
+
+    start = win.FILETIME()
+    kernel.GetSystemTimePreciseAsFileTime(ctypes.byref(start))
+    rows = {}
+    with closing(_windows_process_entries(kernel)) as entries:
+        for entry in entries:
+            pid = entry.th32ProcessID
+            if pid in rows:
+                raise AssertionError(f'ambiguous Windows process identity for PID {pid}')
+            created = None
+            process = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if process:
+                try:
+                    times = [win.FILETIME() for _ in range(4)]
+                    if kernel.GetProcessTimes(process, *(ctypes.byref(value) for value in times)):
+                        identity = ticks(times[0])
+                        # A later PID reuse cannot supply the earlier snapshot row's identity.
+                        if 0 < identity <= ticks(start):
+                            created = _windows_creation_date(identity)
+                finally:
+                    kernel.CloseHandle(process)
+            rows[pid] = {'pid': pid, 'ppid': entry.th32ParentProcessID,
+                         'CreationDate': created, 'Name': entry.szExeFile}
+    return _WindowsProcessTable(rows, None)
+
+
+def _process_table() -> dict:
+    if platform.system() == 'Windows':
+        return _windows_process_table()
+    output, probe_pid = _process_output(['ps', '-axo', 'pid=,ppid='])
+    parents = _parse_process_table(output)
+    parents.pop(probe_pid, None)
+    return parents
+
+
+def _process_identity(parents, pid):
+    row = parents[pid]
+    if not isinstance(row, dict):
+        return pid, None
+    import datetime
+    import re
+    stamp = row.get('CreationDate')
+    try:
+        if not isinstance(stamp, str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z', stamp):
+            raise ValueError('missing or malformed timestamp')
+        datetime.datetime.fromisoformat(stamp)
+    except ValueError as exc:
+        raise AssertionError(f'missing or invalid Windows creation identity for PID {pid}') from exc
+    # Preserve all seven fractional digits; parsing above validates the calendar only.
+    return pid, stamp
+
+
+def _descendants(pid: int, parents: dict | None = None) -> set[int]:
+    parents = _process_table() if parents is None else parents
+    if isinstance(parents, _WindowsProcessTable):
+        if pid not in parents:
+            raise AssertionError(f'missing Windows creation identity for root PID {pid}')
+        _process_identity(parents, pid)
+    children = {}
+    for child, parent in parents.items():
+        parent = parent['ppid'] if isinstance(parent, dict) else parent
+        children.setdefault(parent, []).append(child)
+    found, pending = set(), [(pid, child) for child in children.get(pid, ())]
+    while pending:
+        parent, child = pending.pop()
+        if child not in found:
+            if isinstance(parents.get(parent), dict):
+                # Win32 ParentProcessId can name a newer, unrelated reused PID.
+                if _process_identity(parents, child)[1] < _process_identity(parents, parent)[1]:
+                    continue
+            found.add(child)
+            pending.extend((child, descendant) for descendant in children.get(child, ()))
+    return found
+
+
+def _process_checkpoint(path, parents, relevant, **fields):
+    relevant = sorted(relevant)
+    rows = [parents[pid] if isinstance(parents.get(pid), dict)
+            else {'pid': pid, 'ppid': parents.get(pid), 'CreationDate': None}
+            for pid in relevant[:512]]
+    path.write_text(json.dumps({'schema_version': 1, 'rows': rows, 'row_count': len(relevant),
+        'rows_truncated': len(relevant) > 512,
+        'identity_scheme': 'windows_pid_creation_date' if isinstance(parents, _WindowsProcessTable) else 'posix_pid',
+        'excluded_probe_pid': getattr(parents, 'probe_pid', None),
+        'excluded_probe': getattr(parents, 'probe', None), **fields}, indent=2) + '\n')
+
+
+def _read_process_table(checkpoint):
+    try:
+        return _process_table()
+    except Exception as exc:
+        _process_checkpoint(checkpoint, {}, set(), status='capture_failed',
+                            identity_scheme='unavailable', error=f'{type(exc).__name__}: {str(exc)[:300]}')
+        raise
+
+
+def _capture_process_tree(pid, checkpoint):
+    parents = _read_process_table(checkpoint)
+    raw = {key: row['ppid'] if isinstance(row, dict) else row for key, row in parents.items()}
+    candidates = _descendants(pid, raw)
+    fields = {'root_pid': pid, 'status': 'captured'}
+    try:
+        tracked = _descendants(pid, parents)
+        identities = {child: _process_identity(parents, child) for child in tracked}
+    except AssertionError as exc:
+        _process_checkpoint(checkpoint, parents, candidates | {pid}, root_pid=pid,
+                            status='identity_unavailable', error=str(exc))
+        raise
+    _process_checkpoint(checkpoint, parents, candidates | {pid}, **fields,
+        tracked_pids=sorted(tracked)[:512], tracked_count=len(tracked),
+        excluded_stale_parent_pids=sorted(candidates - tracked)[:512],
+        excluded_stale_parent_count=len(candidates - tracked))
+    return {'parents': parents, 'tracked': tracked, 'identities': identities}
+
+
+def _assert_processes_stopped(before, checkpoint):
+    after = _read_process_table(checkpoint)
+    present = before['tracked'] & set(after)
+    offending, reused = [], []
+    try:
+        for pid in sorted(present):
+            if _process_identity(after, pid) == before['identities'][pid]:
+                offending.append(after[pid] if isinstance(after[pid], dict)
+                                 else {'pid': pid, 'ppid': after[pid], 'CreationDate': None})
+            else:
+                reused.append(pid)
+    except AssertionError as exc:
+        _process_checkpoint(checkpoint, after, before['tracked'], status='identity_unavailable',
+                            error=str(exc), offending=offending[:512], reused_pids=reused[:512])
+        raise
+    _process_checkpoint(checkpoint, after, before['tracked'],
+                        status='orphan' if offending else 'stopped',
+                        offending=offending[:512], offending_count=len(offending),
+                        reused_pids=reused[:512], reused_pid_count=len(reused))
+    assert not offending, 'orphan gateway child'
+
+
+def _assert_no_new_audit_children(pid, baseline, checkpoint):
+    current = _capture_process_tree(pid, checkpoint)
+    baseline_keys = set(baseline['identities'].values())
+    extra = {child for child, identity in current['identities'].items() if identity not in baseline_keys}
+    if extra:
+        offending_pids = sorted(extra)[:512]
+        offending = [current['parents'][child] if isinstance(current['parents'][child], dict)
+                     else {'pid': child, 'ppid': current['parents'][child], 'CreationDate': None}
+                     for child in offending_pids]
+        report = json.loads(checkpoint.read_text())
+        report.update(status='orphan', offending_pids=offending_pids,
+                      offending=offending, offending_count=len(extra))
+        checkpoint.write_text(json.dumps(report, indent=2) + '\n')
+    assert not extra, 'orphan audit child'
+
+
+def _windows_process_snapshot(pid: int) -> dict[str, int]:
+    import ctypes
+    from ctypes import wintypes as win
+
+    class MemoryCounters(ctypes.Structure):
+        _fields_ = [('cb', win.DWORD), ('PageFaultCount', win.DWORD),
+                    ('PeakWorkingSetSize', ctypes.c_size_t), ('WorkingSetSize', ctypes.c_size_t),
+                    ('QuotaPeakPagedPoolUsage', ctypes.c_size_t), ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t), ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                    ('PagefileUsage', ctypes.c_size_t), ('PeakPagefileUsage', ctypes.c_size_t)]
+
+    kernel = _windows_kernel()
+    kernel.K32GetProcessMemoryInfo.argtypes = [win.HANDLE, ctypes.POINTER(MemoryCounters), win.DWORD]
+    kernel.K32GetProcessMemoryInfo.restype = win.BOOL
+    kernel.GetProcessHandleCount.argtypes = [win.HANDLE, ctypes.POINTER(win.DWORD)]
+    kernel.GetProcessHandleCount.restype = win.BOOL
+    process = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not process:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        with closing(_windows_process_entries(kernel)) as entries:
+            threads = next((entry.cntThreads for entry in entries if entry.th32ProcessID == pid), 0)
+        if not threads:
+            raise ProcessLookupError(f'no live threads for Windows process {pid}')
+        memory = MemoryCounters(cb=ctypes.sizeof(MemoryCounters))
+        handles = win.DWORD()
+        if not kernel.K32GetProcessMemoryInfo(process, ctypes.byref(memory), memory.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel.GetProcessHandleCount(process, ctypes.byref(handles)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not memory.WorkingSetSize or not handles.value:
+            raise ProcessLookupError(f'no active resource counters for Windows process {pid}')
+        return {'rss_bytes': memory.WorkingSetSize, 'threads': threads, 'open_handles': handles.value}
+    finally:
+        kernel.CloseHandle(process)
+
+
+def _process_snapshot(pid: int) -> dict[str, int]:
+    if platform.system() == 'Windows':
+        return _windows_process_snapshot(pid)
+    proc = Path('/proc') / str(pid)
+    if platform.system() == 'Linux' and proc.is_dir():
+        status = dict(line.split(':', 1) for line in (proc / 'status').read_text().splitlines()
+                      if ':' in line)
+        return {'rss_bytes': int(status['VmRSS'].split()[0]) * 1024,
+                'threads': int(status['Threads']), 'open_handles': len(list((proc / 'fd').iterdir()))}
+    rss = int(subprocess.run(['ps', '-p', str(pid), '-o', 'rss='], capture_output=True,
+                             text=True, timeout=15, check=True).stdout.strip()) * 1024
+    threads = max(0, len(subprocess.run(['ps', '-M', '-p', str(pid)], capture_output=True,
+                                        text=True, timeout=15, check=True).stdout.splitlines()) - 1)
+    handles = max(0, len(subprocess.run(['lsof', '-nP', '-p', str(pid)], capture_output=True,
+                                        text=True, timeout=15, check=True).stdout.splitlines()) - 1)
+    return {'rss_bytes': rss, 'threads': threads, 'open_handles': handles}
+
+
+def _handle_limit(initial_handles: int) -> int:
+    # Windows starts with more runtime handles; bound growth rather than its baseline.
+    return initial_handles + 100 if platform.system() == 'Windows' else 99
 
 
 def candidate_identity() -> dict:
@@ -36,7 +345,22 @@ def candidate_identity() -> dict:
             "candidate_source_sha256": digest.hexdigest(), "python": sys.version,
             "python_executable": sys.executable, "platform": platform.platform(),
             "dependencies": {name: metadata.version(name) for name in
-                             ("psutil", "fastapi", "uvicorn", "pydantic", "chromadb")}}
+                             ("fastapi", "uvicorn", "pydantic", "chromadb")}}
+
+
+def _wait_for_task_completion(gateway, url, workspace: Path, session: str,
+                              cycles: int, marker: str, task_id: str) -> None:
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}', timeout=35)['tasks']
+        current = next(t for t in tasks if t['id'] == task_id)
+        if current['status'] in ('succeeded', 'failed', 'blocked'):
+            assert current['status'] == 'succeeded', current
+            assert (workspace / marker).read_text() == f'{session}:{cycles}'
+            assert all(t['session_id'] == session for t in tasks)
+            return
+        time.sleep(.1)
+    raise AssertionError('durable worker did not complete within 40 seconds')
 
 
 def run(seconds: float, log_dir: Path) -> dict:
@@ -60,42 +384,38 @@ def run(seconds: float, log_dir: Path) -> dict:
         os.environ['KYROZEN_DB_PATH'] = str(root / 'test-driver.sqlite3')
         os.environ['KYROZEN_BROWSER_PROFILES'] = str(root / 'browser-profiles')
         try:
+            baseline_children = _capture_process_tree(os.getpid(), log_dir / 'process-audit-baseline.json')
             process, url = start_gateway(workspace, db, root / 'skills',
                                                  log_path=log_dir / f'gateway-{restarts:03d}.log')
-            baseline_children = {p.pid for p in psutil.Process().children(recursive=True)}
-            initial_rss = psutil.Process(process.pid).memory_info().rss
+            initial = _process_snapshot(process.pid)
+            initial_rss = initial['rss_bytes']
             generation_rss = initial_rss
+            generation_handles = initial['open_handles']
             def task(session):
                 marker = f'{session}-{cycles}.txt'
+                # Match SQLite's 30-second busy timeout, with a small HTTP margin.
                 created = gateway._request(url, '/api/v2/tasks', method='POST', body={
                     'description': f'soak {session} {cycles}', 'session_id': session,
-                    'action': 'write_file', 'args': f'{marker}|{session}:{cycles}'})['task']
-                deadline = time.monotonic() + 15
-                while time.monotonic() < deadline:
-                    tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}')['tasks']
-                    current = next(t for t in tasks if t['id'] == created['id'])
-                    if current['status'] in ('succeeded', 'failed', 'blocked'):
-                        assert current['status'] == 'succeeded', current
-                        assert (workspace / marker).read_text() == f'{session}:{cycles}'
-                        assert all(t['session_id'] == session for t in tasks)
-                        return
-                    time.sleep(.1)
-                raise AssertionError('durable worker did not complete within 15 seconds')
+                    'action': 'write_file', 'args': f'{marker}|{session}:{cycles}'}, timeout=35)['task']
+                _wait_for_task_completion(gateway, url, workspace, session, cycles, marker, created['id'])
             while time.monotonic() - started < seconds:
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     list(pool.map(task, ('soak-a', 'soak-b')))
-                with sqlite3.connect(db) as connection:
-                    count, unique = connection.execute('SELECT count(*), count(DISTINCT id) FROM tasks').fetchone()
-                    assert count == unique == (cycles + 1) * 2, (count, unique, cycles)
-                    assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
-                    assert not connection.execute('PRAGMA foreign_key_check').fetchall()
-                current = psutil.Process(process.pid)
-                rss = current.memory_info().rss
+                with closing(sqlite3.connect(db)) as connection:
+                    with connection:
+                        count, unique = connection.execute('SELECT count(*), count(DISTINCT id) FROM tasks').fetchone()
+                        assert count == unique == (cycles + 1) * 2, (count, unique, cycles)
+                        assert connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+                        assert not connection.execute('PRAGMA foreign_key_check').fetchall()
+                current = _process_snapshot(process.pid)
+                rss = current['rss_bytes']
                 assert rss <= generation_rss + 256 * 1024 * 1024, 'gateway grew by more than 256 MiB in one generation'
-                measurements.append({'cycle': cycles, 'rss_bytes': rss, 'threads': current.num_threads(),
-                                     'open_files': len(current.open_files())})
-                assert current.num_threads() < 80, 'unbounded gateway thread growth'
-                assert len(current.open_files()) < 100, 'unbounded gateway file descriptor growth'
+                measurements.append({'cycle': cycles, 'handle_baseline': generation_handles, **current})
+                assert current['threads'] < 80, 'unbounded gateway thread growth'
+                assert current['open_handles'] <= _handle_limit(generation_handles), (
+                    f"gateway handle growth exceeded its bound: baseline={generation_handles}, "
+                    f"current={current['open_handles']}"
+                )
                 cycles += 1
                 if cycles % 6 == 0:
                     suite = unittest.defaultTestLoader.loadTestsFromNames([
@@ -106,12 +426,14 @@ def run(seconds: float, log_dir: Path) -> dict:
                     result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
                     assert result.wasSuccessful(), (result.errors, result.failures)
                 if cycles % 12 == 0:
-                    tracked = current.children(recursive=True)
+                    tracked = _capture_process_tree(process.pid, log_dir / f'process-{restarts:03d}-before.json')
                     gateway._stop_server(process)
-                    assert all(not child.is_running() for child in tracked), 'orphan gateway child'
+                    _assert_processes_stopped(tracked, log_dir / f'process-{restarts:03d}-after.json')
                     process, url = start_gateway(workspace, db, root / 'skills',
                                                          log_path=log_dir / f'gateway-{restarts + 1:03d}.log')
-                    generation_rss = psutil.Process(process.pid).memory_info().rss
+                    initial = _process_snapshot(process.pid)
+                    generation_rss = initial['rss_bytes']
+                    generation_handles = initial['open_handles']
                     restarts += 1
                     for session in ('soak-a', 'soak-b'):
                         tasks = gateway._request(url, f'/api/v2/tasks?session_id={session}')['tasks']
@@ -119,17 +441,35 @@ def run(seconds: float, log_dir: Path) -> dict:
                 print(json.dumps({'cycles': cycles, 'restarts': restarts, 'elapsed_seconds': round(time.monotonic()-started),
                                   'rss_bytes': rss}), flush=True)
                 time.sleep(min(5, max(0, seconds - (time.monotonic() - started))))
+            tracked = _capture_process_tree(process.pid, log_dir / 'process-final-before.json')
             gateway._stop_server(process)
             process = None
-            children = psutil.Process().children(recursive=True)
-            assert not [p.pid for p in children if p.pid not in baseline_children], 'orphan audit child'
+            _assert_processes_stopped(tracked, log_dir / 'process-final-after.json')
+            _assert_no_new_audit_children(os.getpid(), baseline_children, log_dir / 'process-audit-final.json')
         except Exception as exc:
             # Retain disposable state and progress so a timeout is diagnosable.
             evidence = log_dir / 'failed-state'
-            shutil.copytree(root, evidence)
+            gateway_at_failure = None
+            if process is not None:
+                gateway_at_failure = {'pid': process.pid, 'returncode': process.poll()}
+                try:
+                    gateway._stop_server(process)
+                except Exception as cleanup_error:
+                    exc.add_note(f'gateway cleanup failed: {type(cleanup_error).__name__}')
+                else:
+                    process = None
+            failed_state = None
+            try:
+                shutil.copytree(root, evidence)
+                failed_state = str(evidence)
+            except OSError as copy_error:
+                exc.add_note(f'failed-state copy failed: {type(copy_error).__name__}')
             exc.soak_report = {'elapsed_seconds': round(time.monotonic()-started, 2),
                                'cycles': cycles, 'tasks': cycles * 2, 'restarts': restarts,
-                               'samples': measurements, 'startup_seconds': startup_seconds, 'startup_timeout_seconds': 60, 'failed_state': str(evidence)}
+                               'samples': measurements, 'startup_seconds': startup_seconds,
+                               'startup_timeout_seconds': 60, 'gateway_at_failure': gateway_at_failure}
+            if failed_state:
+                exc.soak_report['failed_state'] = failed_state
             raise
         finally:
             if process is not None:

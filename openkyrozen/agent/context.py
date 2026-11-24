@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 import json
-from openkyrozen.agent.compaction import ContextState, compact_for_pressure, is_context_digest, message_fingerprint, retain_context_digests
+from openkyrozen.agent.compaction import ContextState, compact_for_pressure, is_context_digest, message_fingerprint, retain_context_digests, resolve_context_window
 from openkyrozen.agent.types import ContextTooLargeError
+
+
+@dataclass(frozen=True)
+class _NativeHistoryDigest:
+    provider_id: str
+    model: str
+    covered_entries: tuple[str, ...]
+    message: dict[str, str]
+
+
+def _remember_native_history_digest(self, state, messages, result) -> None:
+    if not result.history_digest or result.impossible:
+        return
+    projection = self._context_history_projection_ids.get()
+    covered_positions = set(result.native_history_positions)
+    if (not covered_positions or not state.request_provider_id
+            or not projection or projection[0] != id(messages)
+            or not any(item is result.history_digest for item in result.messages)):
+        return
+    entries = sorted(projection[1].items())
+    removed = tuple(entry_id for index, entry_id in entries if index in covered_positions)
+    if not removed or removed != tuple(entry_id for _, entry_id in entries[:len(removed)]):
+        return
+    previous = getattr(self.current_session, "_native_history_digest", None)
+    prior = previous if previous and any(message is previous.message for message in messages) else None
+    if (prior and not any(messages[index] is prior.message for index in covered_positions)
+            or len(covered_positions) != len(removed) + int(prior is not None)):
+        return
+    self.current_session._native_history_digest = _NativeHistoryDigest(
+        state.request_provider_id, state.request_model or state.model,
+        (prior.covered_entries if prior else ()) + removed, result.history_digest,
+    )
 
 
 def _context_scope(self) -> tuple[str, str | None]:
@@ -99,6 +132,13 @@ def _record_context_history_metrics(self, messages: list[dict[str, Any]]) -> Non
     retransmitted_ids = unique_history_ids & seen
     entry_tokens = {entry.id: max(1, (len(json.dumps(entry.payload, ensure_ascii=False)) + 3) // 4)
                     for entry in entries if entry.id in history_ids}
+    if projection is not None and projection[0] == id(messages):
+        for index, entry_id in projection[1].items():
+            if index < len(messages) and isinstance(messages[index], ToolReply):
+                reply = messages[index]
+                sent = {"call_id": reply.call_id, "name": reply.name,
+                        "output": reply.output, "is_error": reply.is_error}
+                entry_tokens[entry_id] = max(1, (len(json.dumps(sent, ensure_ascii=False)) + 3) // 4)
     self._context_history_metrics.set({
         "new_entry_count": len(new_ids),
         "retransmitted_entry_count": len(retransmitted_ids),
@@ -145,9 +185,11 @@ def _load_reported_context_tokens(self, state: ContextState) -> None:
 def _cache_reported_context_tokens(self, messages: list[dict], prompt_tokens: int) -> None:
     if prompt_tokens < 1:
         return
+    state = self._active_context_state.get()
+    fingerprint = state.request_fingerprint(messages) if state is not None else message_fingerprint(messages)
     with self._context_status_lock:
         counts = self._provider_token_counts_by_scope.setdefault(self._context_scope(), {})
-        counts[message_fingerprint(messages)] = int(prompt_tokens)
+        counts[fingerprint] = int(prompt_tokens)
         while len(counts) > 32:
             counts.pop(next(iter(counts)))
 
@@ -201,11 +243,18 @@ def _prepare_context_for_call(self, messages: list[dict], model: str | None = No
     state = self._active_context_state.get()
     if state is None or self._in_context_compaction.get():
         return
+    if model is not None and model != state.model:
+        state.model = state.request_model = model
+        state.window_tokens, state.window_source = resolve_context_window(model, state.configured_window)
     self._load_reported_context_tokens(state)
+    projection = self._context_history_projection_ids.get()
+    if projection is not None and projection[0] == id(messages):
+        state.history_message_ids.update(id(messages[index]) for index in projection[1] if index < len(messages))
     result = compact_for_pressure(
         messages, state,
         lambda text, output_chars: self._summarize_context_with_chat_model(text, output_chars, model or state.model),
     )
+    _remember_native_history_digest(self, state, messages, result)
     previous_messages = list(messages)
     messages[:] = result.messages
     _update_context_history_projection(self, messages, previous_messages)
@@ -214,7 +263,8 @@ def _prepare_context_for_call(self, messages: list[dict], model: str | None = No
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
         self.short_term_memory = retain_context_digests([result.history_digest] + retained_history, self.SHORT_TERM_CAP * 2)
         self.current_session.messages_compacted = True
-        state.history_message_ids = {id(item) for item in self.short_term_memory}
+        state.history_message_ids.intersection_update(retained_ids)
+        state.history_message_ids.update(id(item) for item in self.short_term_memory)
         self._save_learning_context_digest(result.history_digest)
     self._store_context_status(state)
     if result.impossible:
@@ -235,6 +285,7 @@ def _recover_context_after_overflow(self, messages: list[dict], model: str | Non
         lambda text, output_chars: self._summarize_context_with_chat_model(text, output_chars, model or state.model),
         force=True,
     )
+    _remember_native_history_digest(self, state, messages, result)
     previous_messages = list(messages)
     messages[:] = result.messages
     _update_context_history_projection(self, messages, previous_messages)
@@ -243,7 +294,8 @@ def _recover_context_after_overflow(self, messages: list[dict], model: str | Non
         retained_history = [item for item in self.short_term_memory if id(item) in retained_ids]
         self.short_term_memory = retain_context_digests([result.history_digest] + retained_history, self.SHORT_TERM_CAP * 2)
         self.current_session.messages_compacted = True
-        state.history_message_ids = {id(item) for item in self.short_term_memory}
+        state.history_message_ids.intersection_update(retained_ids)
+        state.history_message_ids.update(id(item) for item in self.short_term_memory)
         self._save_learning_context_digest(result.history_digest)
     self._store_context_status(state)
     return result.compacted and not result.impossible

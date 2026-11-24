@@ -196,6 +196,7 @@ class ExecutionReceipt:
     tool_source: str | None
     side_effects: str
     _verification_json: str = field(repr=False)
+    _archived_read_content: str | None = field(init=False, repr=False, compare=False)
     failure: str | None = None
     exit_code: int | None = None
     verified_effect: str | None = None
@@ -215,7 +216,8 @@ class ExecutionReceipt:
                  workspace_id: str | None = None, session_id: str | None = None,
                  plan_id: str | None = None, task_id: str | None = None,
                  tool_version: str | None = None, tool_source: str | None = None,
-                 side_effects: str = "unknown", verification: dict[str, Any] | None = None):
+                 side_effects: str = "unknown", verification: dict[str, Any] | None = None,
+                 archived_read_content: str | None = None):
         if call_id is not None and (not isinstance(call_id, str) or not call_id.strip()):
             raise ValueError("Receipt call_id must be nonempty when present")
         if call_id_source not in {"native", "legacy", "synthetic"}:
@@ -261,6 +263,7 @@ class ExecutionReceipt:
                             ("acceptance", acceptance), ("args_sha256", args_sha256)):
             object.__setattr__(self, name, value)
         object.__setattr__(self, "_verification_json", _json_snapshot(verification, "Receipt verification"))
+        object.__setattr__(self, "_archived_read_content", archived_read_content)
         error_projection = tool_error
         if error_projection is None and tool_result is not None and tool_result.error is not None:
             error_projection = {"code": tool_result.error.code, "message": tool_result.error.message,

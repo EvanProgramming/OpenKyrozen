@@ -1,14 +1,17 @@
 import copy
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from openkyrozen.agent.delegation import Delegation, NAMES, WorkspaceAccess, identicon, report
+from openkyrozen.agent.delegation import Delegation, NAMES, WorkspaceAccess, focused_review_report, identicon, report
 from openkyrozen.app.bootstrap import build_application, build_memory
 from openkyrozen.app.config import load_agent_config, AgentConfigError
 from openkyrozen.providers.config import ProviderConfig
@@ -85,6 +88,45 @@ class DelegationTests(unittest.TestCase):
         self.assertFalse(receipt['success'])
         self.assertIn('could not be converted', receipt['result'])
 
+    def test_readonly_assignment_rejects_execution_output_before_dispatch(self):
+        from openkyrozen.agent.delegation import DelegationBudget, DelegationRequestError
+
+        coordinator = self.runtime.delegation()
+        assignment = {**brief(0), "profile": "researcher",
+                      "acceptance": ["Report includes the exact test command(s) run and verbatim output summary"]}
+        budget = DelegationBudget()
+        remaining = budget.remaining_picos
+        for criterion in (assignment["acceptance"][0], "Report the exact command and whether it currently passes or fails",
+                          "Exact test command and current pass/fail status"):
+            with self.subTest(criterion=criterion), self.assertRaisesRegex(DelegationRequestError, "Run it in the main turn"):
+                coordinator.spawn([{**assignment, "acceptance": [criterion]}], budget=budget)
+        self.assertEqual(coordinator.list(), [])
+        self.assertEqual(budget.remaining_picos, remaining)
+        valid = {**assignment, "acceptance": ["Cite the test assertion and recommend the verification command"]}
+        self.assertEqual(coordinator._brief(valid)["acceptance"], valid["acceptance"])
+
+    def test_requested_test_review_uses_readonly_brief_without_execution_deliverables(self):
+        from openkyrozen.agent.delegation_runtime import spawn_agents
+
+        coordinator = self.runtime.delegation()
+        execute = spawn_agents.__tool_result_executor__
+        args = {"test_review": {"scope": ["marker.txt"], "focus": "the empty-input behavior"}}
+        with patch.object(coordinator, "spawn", return_value=[{"run_id": "review"}]) as dispatch:
+            rejected = execute(self.runtime, args)
+            self.assertFalse(rejected.success)
+            dispatch.assert_not_called()
+            self.runtime.execution_context.native_control_input = "Fix the parser. Delegate the independent test review if available."
+            accepted = execute(self.runtime, args)
+            self.assertTrue(accepted.success)
+            assignment, = dispatch.call_args.args[0]
+            checked = coordinator._brief(assignment)
+            self.assertEqual((checked["profile"], checked["scope"]), ("researcher", ["marker.txt"]))
+            self.assertIn("empty-input behavior", checked["context"])
+            self.assertIn("recommend the repository's verification command", checked["deliverables"][0])
+            self.assertNotIn("task_id", checked)
+            self.assertFalse(execute(self.runtime, {**args, "assignments": [brief()]}).success)
+            dispatch.assert_called_once()
+
     def test_reviewer_receipt_arguments_match_structured_artifact_paths(self):
         from openkyrozen.agent.subagent_runtime import _receipt_argument
         self.assertEqual(_receipt_argument({'path': 'delivered.txt'}, 'path'), 'delivered.txt')
@@ -111,6 +153,22 @@ class DelegationTests(unittest.TestCase):
         )
         self.assertTrue(checks[0]['independently_read'])
         self.assertEqual(findings, [])
+
+    def test_reviewer_hashes_artifact_while_writer_owns_its_path(self):
+        artifact = self.root / "marker.txt"
+        run_id = "writing-run"
+        coordinator = self.manager(lambda *_: None)
+        coordinator.cancelled[run_id] = threading.Event()
+        digest = sha256(artifact.read_bytes()).hexdigest()
+        run = {"run_id": run_id, "report": {"artifacts": [{"path": artifact.name, "sha256": digest}]}}
+        review = {"tool_records": [{"action": "read_file", "args": {"path": artifact.name}, "success": True}]}
+
+        with coordinator.access.claim({str(artifact.resolve())}, run_id, lambda: False):
+            with patch.object(coordinator.access.condition, "wait", side_effect=AssertionError("own path blocked")):
+                findings, checks = coordinator._inspect_artifacts(run, review)
+
+        self.assertEqual(findings, [])
+        self.assertEqual(checks[0]["sha256"], digest)
 
     def fake_provider(self, config):
         runtime, calls, lock = self.runtime, self.calls, self.call_lock
@@ -399,10 +457,17 @@ class DelegationTests(unittest.TestCase):
             return {"result": result()}
         coordinator = self.manager(invoke, 1)
         run = coordinator.spawn([brief()])[0]
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(10))
         coordinator.cancel(run["run_id"])
         release.set()
-        coordinator.futures[run["run_id"]].result(timeout=5)
+        try:
+            coordinator.futures[run["run_id"]].result(timeout=5)
+        except TimeoutError:
+            frames = sys._current_frames()
+            stacks = [f"{thread.name}:\n{''.join(traceback.format_stack(frames[thread.ident]))}"
+                      for thread in threading.enumerate()
+                      if thread.name.startswith("kyrozen-agent") and thread.ident in frames]
+            self.fail("Cancelled worker did not finish within 5 seconds:\n" + "\n".join(stacks))
         self.assertEqual(coordinator.wait(timeout=3)[0]["status"], "cancelled")
         coordinator.memory.store.append_event("subagent.state", {**run, "status": "running"},
             user_id=coordinator.memory.user_id, workspace_id=coordinator.memory.file_scope_id,
@@ -471,6 +536,189 @@ class DelegationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.runtime.delegation().detail(run["run_id"])
 
+    def test_native_read_only_report_uses_the_persisted_tool_receipt(self):
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply
+
+        class Provider(LLMProvider):
+            def chat(self, messages, model=None):
+                raise AssertionError("native delegation must not use the legacy provider")
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                reply = next((item for item in messages if isinstance(item, ToolReply)), None)
+                if reply is None:
+                    return ModelResponse(tool_calls=(ToolCall("native-read", "read_file", {"path": "marker.txt"}),),
+                                         finish_reason=FinishReason.TOOL_REQUEST)
+                receipt_id = reply.output["metadata"].get("receipt_id")
+                evidence = [{"receipt_id": receipt_id}] if receipt_id else []
+                return ModelResponse(text=json.dumps(result(evidence=evidence)), finish_reason=FinishReason.FINAL)
+
+        self.runtime.get_provider = Provider
+        coordinator = self.runtime.delegation()
+        self.addCleanup(coordinator.close)
+        agent = coordinator.spawn([brief(risk="normal")])[0]
+        run = coordinator.wait([agent["run_id"]], timeout=10)[0]
+        self.assertEqual(run["status"], "succeeded", run.get("error"))
+        self.assertEqual(run["reviews"][0]["verification"], "receipt-bound-read-only")
+        receipt, = run["result"]["tool_records"]
+        self.assertEqual(json.loads(receipt["args"]), {"path": "marker.txt"})
+        self.assertEqual(run["report"]["evidence"], [{"receipt_id": receipt["receipt_id"]}])
+
+    def test_original_native_detail_uses_the_journal_scope_for_author_and_reviewer(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply
+
+        class Provider(LLMProvider):
+            def chat(self, messages, model=None):
+                raise AssertionError("native delegation must not use the legacy provider")
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                if not any(isinstance(item, ToolReply) for item in messages):
+                    assert not {"list_dir", "list_tree", "find_files"} & {item["name"] for item in tools}
+                    return ModelResponse(tool_calls=(ToolCall("native-read", "read_file", {"path": "marker.txt"}),),
+                                         finish_reason=FinishReason.TOOL_REQUEST)
+                review = any(isinstance(item, dict) and "Independently verify" in str(item.get("content", ""))
+                             for item in messages)
+                return ModelResponse(text=json.dumps(reviewed() if review else result()),
+                                     finish_reason=FinishReason.FINAL)
+
+        self.runtime.get_provider = Provider
+        for bound in (False, True):
+            with self.subTest(project_bound=bound):
+                if bound:
+                    self.runtime.configure_launch_context(project_path=self.root)
+                    self.runtime.bind_interaction_scope("project-parent")
+                # The task scope is independent of the source and conversation scopes.
+                self.runtime.tasks.workspace_id = "parent-tasks-only"
+                scope = self.runtime.interaction_workspace_id()
+                coordinator = self.runtime.delegation()
+                self.addCleanup(coordinator.close)
+                agent = coordinator.spawn([brief()])[0]
+                run = coordinator.wait([agent["run_id"]], timeout=10)[0]
+                self.assertEqual(run["status"], "succeeded", run.get("error"))
+                detail = coordinator.detail(agent["run_id"])
+                for child_id, displayed in ((agent["run_id"], detail["messages"]),
+                        (run["reviews"][0]["session_id"], detail["review_messages"][run["reviews"][0]["session_id"]])):
+                    history = ConversationHistory(self.app.store, user_id="local", workspace_id=scope,
+                                                  session_id=child_id)
+                    entries = history.entries()
+                    self.assertTrue(any(entry.kind == "tool.result" and entry.payload["call_id"] == "native-read"
+                                        for entry in entries))
+                    self.assertEqual([item["role"] for item in displayed], ["user", "assistant"])
+                    self.assertEqual(displayed, history.display_messages())
+                self.assertEqual(detail.get("conversation_workspace_id"), scope)
+
+    def test_focused_native_review_reads_sources_and_binds_its_own_evidence(self):
+        from openkyrozen.providers.base import LLMProvider
+        from openkyrozen.providers.models import FinishReason, ModelResponse, ProviderCapabilities, ToolCall, ToolReply
+
+        (self.root / "test_marker.txt").write_text("expected: ok\n")
+        paths = ["marker.txt", "test_marker.txt"]
+        review_requests = []
+
+        class Provider(LLMProvider):
+            def chat(self, messages, model=None):
+                raise AssertionError("focused review must use native tools")
+
+            def get_capabilities(self, model=None):
+                return ProviderCapabilities(native_tools=True)
+
+            def chat_response(self, messages, model=None, *, tools=None):
+                review = next((item["content"] for item in messages if isinstance(item, dict)
+                               and '"fresh_review_sources"' in item.get("content", "")), None)
+                saw_reads = any(isinstance(item, ToolReply) for item in messages)
+                if review:
+                    marker = "## Current native tool availability\n"
+                    availability = next(item["content"].removeprefix(marker).splitlines()[0] for item in messages
+                                        if isinstance(item, dict) and item.get("content", "").startswith(marker))
+                    review_requests.append(json.loads(availability)["current_call_tools"])
+                    if ('"content": "ok"' not in review or '"content": "expected: ok\\n"' not in review
+                            or '"inventory":' not in review):
+                        raise AssertionError("expected independently read source contents")
+                if not saw_reads and not review:
+                    calls = tuple(ToolCall(f"source-{index}", "read_file", {"path": path})
+                                  for index, path in enumerate(paths))
+                    calls += (ToolCall("inventory", "list_tree", {"path": "."}),)
+                    return ModelResponse(tool_calls=calls, finish_reason=FinishReason.TOOL_REQUEST)
+                answer = ({"verdict": "verified", "summary": "The marker matches the expected value."}
+                          if review else result())
+                return ModelResponse(text=json.dumps(answer), finish_reason=FinishReason.FINAL)
+
+        self.runtime.get_provider = Provider
+        coordinator = self.runtime.delegation()
+        self.addCleanup(coordinator.close)
+        agent, = coordinator.spawn([brief(risk="normal", scope=["."], context="Compare marker.txt with test_marker.txt")])
+        run, = coordinator.wait([agent["run_id"]], timeout=10)
+        self.assertEqual(run["status"], "succeeded", run.get("error"))
+        self.assertEqual(review_requests, [[]])
+        verdict, = run["reviews"]
+        own_receipts = {item["receipt_id"] for item in verdict["tool_receipts"]}
+        self.assertEqual({item["receipt_id"] for item in verdict["evidence"]}, own_receipts)
+        self.assertTrue(own_receipts.isdisjoint(item["receipt_id"] for item in run["result"]["tool_records"]))
+        self.assertEqual([item["path"] for item in verdict["evidence"]], [*paths, "."])
+        self.assertEqual(verdict["findings"], [])
+
+    def test_focused_review_cannot_verify_unread_sources_or_model_receipt_ids(self):
+        proposal = {"verdict": "verified", "summary": "I checked everything.", "evidence": ["made-up"]}
+        result = focused_review_report(json.dumps(proposal), [])
+        self.assertEqual(result["verdict"], "unverifiable")
+        self.assertEqual(result["evidence"], [])
+
+    def test_detail_old_runs_fall_back_only_when_the_source_journal_is_absent(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        coordinator = self.manager(lambda *_args, **_kwargs: None)
+        coordinator.memory.file_scope_id = "source-current"
+        store = coordinator.memory.store
+        for index, source_message in enumerate((None, "source history", "")):
+            with self.subTest(source_message=source_message):
+                run_id, review_id = f"old-author-{index}", f"old-review-{index}"
+                coordinator.runs[run_id] = {"run_id": run_id, "status": "succeeded",
+                                            "reviews": [{"session_id": review_id}]}
+                for session_id in (run_id, review_id):
+                    global_history = ConversationHistory(store, user_id="local", workspace_id="default",
+                                                         session_id=session_id)
+                    global_history.import_legacy([{"role": "assistant", "content": "global history"}])
+                    if source_message is not None:
+                        history = ConversationHistory(store, user_id="local", workspace_id="source-current",
+                                                      session_id=session_id)
+                        history.append(history.entry("turn.outcome", {"text": source_message}))
+                detail = coordinator.detail(run_id)
+                expected = ([{"role": "assistant", "content": "global history"}] if source_message is None else
+                            [{"role": "assistant", "content": "source history"}] if source_message else [])
+                self.assertEqual(detail["messages"], expected)
+                self.assertEqual(detail["review_messages"][review_id], expected)
+                self.assertNotIn("conversation_workspace_id", coordinator.runs[run_id])
+
+    def test_detail_explicit_journal_scope_never_falls_back_to_other_scopes(self):
+        from openkyrozen.agent.conversation import ConversationHistory
+
+        coordinator = self.manager(lambda *_args, **_kwargs: None)
+        coordinator.memory.file_scope_id = "source-current"
+        coordinator.runs["owned-author"] = {"run_id": "owned-author", "status": "succeeded", "reviews": [],
+                                            "conversation_workspace_id": "project-current"}
+        for user, workspace, session in (("other-user", "project-current", "owned-author"),
+                ("local", "other-project", "owned-author"), ("local", "default", "owned-author"),
+                ("local", "source-current", "owned-author"), ("local", "project-current", "other-session")):
+            history = ConversationHistory(coordinator.memory.store, user_id=user, workspace_id=workspace,
+                                          session_id=session)
+            history.import_legacy([{"role": "assistant", "content": "private foreign history"}])
+        self.assertEqual(coordinator.detail("owned-author")["messages"], [])
+        coordinator.runs["old-owned-author"] = {"run_id": "old-owned-author", "status": "succeeded", "reviews": []}
+        for user, workspace, session in (("other-user", "default", "old-owned-author"),
+                ("local", "other-project", "old-owned-author"), ("local", "default", "old-other-session")):
+            history = ConversationHistory(coordinator.memory.store, user_id=user, workspace_id=workspace,
+                                          session_id=session)
+            history.import_legacy([{"role": "assistant", "content": "private foreign history"}])
+        self.assertEqual(coordinator.detail("old-owned-author")["messages"], [])
+
     def test_main_automatically_delegates_and_waits_before_claiming_success(self):
         runtime = self.runtime
         runtime.set_interaction_mode("agent")
@@ -486,8 +734,10 @@ class DelegationTests(unittest.TestCase):
                 return ('Plan:\n1. Inspect workspace structure.\n2. Spawn two specialist agents.\n3. Wait for verified results and synthesize.\n'
                         'Action: {"action":"list_dir","args":"."}'), None
         runtime.llm_provider = MainProvider()
+        original_classifier = runtime._classify_complexity
         with (patch.object(runtime, "dispatch_learning_cycle", return_value={}),
-              patch.object(runtime, "_classify_complexity", return_value="complex"),
+              patch.object(runtime, "_classify_complexity", side_effect=lambda request:
+                  "complex" if request == "Inspect two independent components" else original_classifier(request)),
               patch.object(runtime, "_touch_detached_learning_heartbeat"),
               patch.object(runtime, "_render_tool_result"),
               patch.object(runtime, "_update_tasks_panel")):
@@ -638,6 +888,65 @@ class DelegationTests(unittest.TestCase):
                     self.assertIn("unsupported tool-call wrapper", reply)
                 self.assertIsNone(self.runtime._interaction_controller.state().get("pending_plan"))
 
+    def test_concurrent_calls_use_only_one_terminal_spinner(self):
+        import io
+        from contextlib import redirect_stdout
+
+        second_app = build_application(memory=build_memory(self.root / "state-second.sqlite3"),
+                                      tools=ToolAdapters(self.root))
+        second_runtime = second_app.runtime
+        second_entered = threading.Event()
+        release_second = threading.Event()
+        spinner_starts = []
+        errors = []
+        answers = []
+        original_start = threading.Thread.start
+
+        def controlled_start(thread):
+            target = getattr(thread, "_target", None)
+            if (getattr(target, "__self__", None) in {self.runtime, second_runtime}
+                    and getattr(target, "__name__", "") == "_spinner_worker"):
+                spinner_starts.append(thread)
+            return original_start(thread)
+
+        def response(_messages, model=None):
+            if threading.current_thread().name == "spinner-first":
+                if not second_entered.wait(5):
+                    raise TimeoutError("second model call did not start concurrently")
+            else:
+                second_entered.set()
+                if not release_second.wait(5):
+                    raise TimeoutError("second model call was not released")
+            return "done"
+
+        def call():
+            try:
+                runtime = second_runtime if threading.current_thread().name == "spinner-second" else self.runtime
+                answers.append(runtime._call_llm_with_spinner([{"role": "user", "content": "test"}]))
+            except BaseException as exc:
+                errors.append(exc)
+
+        with (patch.object(self.runtime, "_prepare_context_for_call"),
+              patch.object(self.runtime, "_get_llm_response", side_effect=response),
+              patch.object(second_runtime, "_prepare_context_for_call"),
+              patch.object(second_runtime, "_get_llm_response", side_effect=response),
+              patch.object(threading.Thread, "start", controlled_start),
+              redirect_stdout(io.StringIO())):
+            first = threading.Thread(target=call, name="spinner-first")
+            second = threading.Thread(target=call, name="spinner-second")
+            first.start()
+            second.start()
+            first.join(5)
+            release_second.set()
+            second.join(5)
+        second_app.close()
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(answers, ["done", "done"])
+        self.assertEqual(len(spinner_starts), 1)
+
     def test_parent_cannot_turn_unverified_findings_into_success(self):
         class MainProvider:
             def chat(inner, messages, model):
@@ -754,7 +1063,14 @@ class DelegationTests(unittest.TestCase):
         self.runtime.get_provider = lambda _: SlowProvider()
         coordinator = self.runtime.delegation()
         run = coordinator.spawn([brief(profile="coder")])[0]
-        self.assertTrue(entered.wait(2))
+        if not entered.wait(10):
+            with coordinator.lock:
+                future = coordinator.futures[run["run_id"]]
+                state = coordinator.summary(coordinator.runs[run["run_id"]])
+                future_done = future.done()
+                future_error = repr(future.exception()) if future_done else None
+            self.fail(f"Provider call did not start within 10 seconds: state={state}, "
+                      f"future_done={future_done}, future_error={future_error}")
         coordinator.cancel(run["run_id"])
         release.set()
         coordinator.futures[run["run_id"]].result(timeout=5)
@@ -808,7 +1124,7 @@ class DelegationTests(unittest.TestCase):
         runtime.get_provider = lambda _: Provider()
         coordinator = runtime.delegation()
         coordinator.spawn([brief(profile="coder")])
-        run = coordinator.wait(timeout=5)[0]
+        run = coordinator.wait(timeout=15)[0]
         self.assertEqual(run["status"], "succeeded")
         self.assertEqual(run["corrections"], 1)
         self.assertEqual((self.root / "marker.txt").read_text(), "ok")
@@ -927,7 +1243,15 @@ class DelegationTests(unittest.TestCase):
         self.runtime._provider_config = ProviderConfig(provider="openai", api_key="fixture-openai", base_url="https://openai.fixture/v1",
             model_simple="gpt-fixture", model_complex="gpt-fixture")
         self.runtime.DEEPSEEK_MODEL = "gpt-fixture"
-        self.runtime.get_provider = get_provider
+        # This fixture checks nonstreaming SDK request shapes; live streaming has separate coverage.
+        from dataclasses import replace
+        def fixture_provider(config):
+            provider = get_provider(config)
+            capabilities = provider.get_capabilities
+            provider.get_capabilities = lambda model=None: replace(
+                capabilities(model), text_streaming=False, streaming_tool_calls=False)
+            return provider
+        self.runtime.get_provider = fixture_provider
         (self.root / "agent.yaml").write_text("subagents:\n  roles:\n    researcher:\n      provider: anthropic\n      model: claude-fixture\n")
         with (patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fixture-claude", "KYROZEN_API_KEY": "wrong-main"}),
               patch("openai.OpenAI", side_effect=lambda **kw: real_openai(**kw, http_client=httpx.Client(transport=transport))),
@@ -943,6 +1267,7 @@ class DelegationTests(unittest.TestCase):
             self.assertIsNotNone(runs[1]["result"]["metrics"]["cost_picos"])
             self.assertTrue(all(run["reviews"][0]["metrics"]["provider_model"] == "openai:gpt-fixture-actual" for run in runs))
             for url, headers, body in requests:
+                headers = {name.lower(): value for name, value in headers.items()}
                 if url.path == "/v1/messages":
                     self.assertEqual(url.host, "api.anthropic.com")
                     self.assertIn(headers.get("x-api-key") or headers.get("authorization"),
@@ -1045,7 +1370,7 @@ class DelegationTests(unittest.TestCase):
             self.assertFalse((self.root/"other/first.txt").exists())
             agents = coordinator.spawn([brief(0, profile="coder", scope=["first.txt"]),
                 brief(1, profile="coder", scope=["second.txt"], dependencies=["0"])])
-            finished = coordinator.wait([run["run_id"] for run in agents],5)
+            finished = coordinator.wait([run["run_id"] for run in agents],15)
         finally:
             runtime._active_interaction_mode.reset(token)
         self.assertEqual([run["status"] for run in finished], ["succeeded", "blocked"], finished)

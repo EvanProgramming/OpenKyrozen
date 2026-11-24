@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,41 +29,41 @@ def migrate_v1_chroma(source: str | Path, target_db: str | Path, *, workspace_id
     if not backup.exists():
         shutil.copytree(source_path, backup)
     client = chromadb.PersistentClient(path=str(source_path), settings=Settings(anonymized_telemetry=False))
-    memory = MemoryBank(target_path, workspace_id=workspace_id)
-    imported_logs = 0
-    imported_files = 0
-    for name in ("agent_logs", "agent_files"):
-        try:
-            collection = client.get_collection(name)
-        except Exception:
-            continue
-        data = collection.get(include=["documents", "metadatas"])
-        documents = data.get("documents", [])
-        metadatas = data.get("metadatas", [])
-        for document, metadata in zip(documents, metadatas):
-            if not document:
+    with closing(MemoryBank(target_path, workspace_id=workspace_id)) as memory:
+        imported_logs = 0
+        imported_files = 0
+        for name in ("agent_logs", "agent_files"):
+            try:
+                collection = client.get_collection(name)
+            except Exception:
                 continue
-            metadata = metadata or {}
-            if name == "agent_files" or str(document).startswith("FILE:"):
-                rel_path = str(metadata.get("rel_path", ""))
-                if not rel_path:
-                    rel_path = str(document).split("\n", 1)[0].removeprefix("FILE: ")
-                content = str(document).split("\n", 2)[-1]
-                content = content.removeprefix("```python\n").removesuffix("\n```")
-                memory.add_file(rel_path, content)
-                imported_files += 1
-            else:
-                memory.add_log(str(document), kind=memory._kind_for_text(str(document)),
-                               metadata={"migrated_from": str(source_path), "legacy_metadata": metadata})
-                imported_logs += 1
-    report = {
-        "source": str(source_path), "backup": str(backup), "target": str(target_path),
-        "workspace_id": workspace_id, "imported_logs": imported_logs,
-        "imported_files": imported_files,
-        "migrated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    memory.store.append_event("migration.v1_completed", report, workspace_id=workspace_id)
-    return report
+            data = collection.get(include=["documents", "metadatas"])
+            documents = data.get("documents", [])
+            metadatas = data.get("metadatas", [])
+            for document, metadata in zip(documents, metadatas):
+                if not document:
+                    continue
+                metadata = metadata or {}
+                if name == "agent_files" or str(document).startswith("FILE:"):
+                    rel_path = str(metadata.get("rel_path", ""))
+                    if not rel_path:
+                        rel_path = str(document).split("\n", 1)[0].removeprefix("FILE: ")
+                    content = str(document).split("\n", 2)[-1]
+                    content = content.removeprefix("```python\n").removesuffix("\n```")
+                    memory.add_file(rel_path, content)
+                    imported_files += 1
+                else:
+                    memory.add_log(str(document), kind=memory._kind_for_text(str(document)),
+                                   metadata={"migrated_from": str(source_path), "legacy_metadata": metadata})
+                    imported_logs += 1
+        report = {
+            "source": str(source_path), "backup": str(backup), "target": str(target_path),
+            "workspace_id": workspace_id, "imported_logs": imported_logs,
+            "imported_files": imported_files,
+            "migrated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        memory.store.append_event("migration.v1_completed", report, workspace_id=workspace_id)
+        return report
 
 
 def main() -> None:

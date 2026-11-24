@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-var version = "2.0.8"
+var version = "3.0.0"
 
 var openKyrozenBanner = []string{
 	" ███  ████  █████ █   █ █   █ █   █ ████   ███  █████ █████ █   █",

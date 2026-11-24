@@ -14,6 +14,11 @@ from openkyrozen.providers.errors import normalize_provider_error
 class LLMProvider(ABC):
     """Unified interface for all LLM backends."""
 
+    native_tool_protocol: str | None = None
+
+    def native_tool_protocol_for(self, messages) -> str | None:
+        return self.native_tool_protocol
+
     def __init__(self, config: ProviderConfig) -> None:
         self.config = config
         self._continuation_id = uuid.uuid4().hex

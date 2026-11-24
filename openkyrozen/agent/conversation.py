@@ -206,7 +206,8 @@ class ConversationHistory:
                     )})
             elif entry.kind == "turn.outcome":
                 text = payload.get("text")
-                if isinstance(text, str) and text and text != model_turn_text.get(entry.turn_id):
+                if (isinstance(text, str) and text.strip()
+                        and text.strip() != model_turn_text.get(entry.turn_id, "").strip()):
                     messages.append_entry(entry, {"role": "assistant", "content": text})
         validate_tool_history(messages, provider_id=provider_id, model=model, native=native)
         return messages
