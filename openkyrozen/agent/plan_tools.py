@@ -7,6 +7,62 @@ from openkyrozen.tools.models import legacy_text_api, tool_failure, tool_success
 _EXPECTED_COMMAND_FAILURE = re.compile(
     r"^\s*(?:the\s+)?(?:reproduction\s+)?command\s+(?:fails?\b|exits?\s+non[- ]?zero\b)", re.IGNORECASE,
 )
+_DISCOVERED_VERIFICATION_REQUEST = re.compile(r"\badd (?:a )?(?:separate )?verification task\b", re.IGNORECASE)
+_VERIFICATION_TASK = re.compile(r"^\s*(?:verify|verification|check|test)\b", re.IGNORECASE)
+
+
+def _normalize_native_plan_additions(runtime, arguments, plan):
+    """Keep native add metadata and the source of an explicitly requested follow-up check."""
+    operations = arguments.get("operations")
+    if (plan is None or plan.status != "active" or arguments.get("plan_id") != plan.id
+            or type(arguments.get("expected_revision")) is not int
+            or arguments["expected_revision"] != plan.revision or not isinstance(operations, list)
+            or runtime.execution_context.child_run_id):
+        return arguments
+    interaction = runtime._interaction_controller.state()
+    if interaction.get("executing_plan") or interaction.get("pending_plan"):
+        return arguments
+
+    source = None
+    if _DISCOVERED_VERIFICATION_REQUEST.search(runtime.execution_context.native_control_input):
+        reproduced = [task["description"] for task in runtime.tasks.tasks
+                      if task["id"] in plan.task_ids and task["status"] == "succeeded"
+                      and not (task.get("checkpoint") or {}).get("strategic_plan")
+                      and any(item.get("action") == "run_cmd" and item.get("success") is True
+                              and item.get("acceptance_ids")
+                              and type(item.get("failed_command_exit_code")) is int
+                              and item["failed_command_exit_code"] != 0
+                              for item in task.get("evidence", ()))]
+        if len(reproduced) == 1:
+            source = reproduced[0].removeprefix("reproduce: ").strip()
+
+    normalized = []
+    for operation in operations:
+        if not isinstance(operation, dict):
+            normalized.append(operation)
+            continue
+        kind = operation.get("op")
+        task = operation.get("task") if kind == "add" else operation if kind == "add_command_check" else None
+        if not isinstance(task, dict):
+            normalized.append(operation)
+            continue
+        if kind == "add" and type(operation.get("priority")) is int and "priority" not in task:
+            task = {**task, "priority": operation["priority"]}
+            operation = {key: value for key, value in operation.items() if key != "priority"}
+        description = task.get("description")
+        if (source and isinstance(description, str) and _VERIFICATION_TASK.match(description)
+                and source.casefold() not in description.casefold()):
+            criteria = task.get("acceptance")
+            checks_success = ("expected_exit_code" not in task if kind == "add_command_check" else
+                isinstance(criteria, list) and any(
+                    isinstance(criterion, dict) and isinstance(verification := criterion.get("verification"), dict)
+                    and verification.get("action") == "run_cmd" and "expect" not in verification
+                    for criterion in criteria))
+            if checks_success:
+                task = {**task, "description": f"{description.rstrip()} (after reproduction: {source})"}
+        operation = {**operation, "task": task} if kind == "add" else task
+        normalized.append(operation)
+    return {**arguments, "operations": normalized}
 
 
 def _control_error(self):

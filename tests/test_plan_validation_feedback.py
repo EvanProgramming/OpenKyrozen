@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -26,6 +27,40 @@ from openkyrozen.tools.models import invoke_tool_result, legacy_text_api, tool_f
 
 
 class PlanValidationFeedbackTests(unittest.TestCase):
+    def test_native_additions_keep_the_verified_reproduction_and_task_priority(self):
+        from openkyrozen.agent.plan_tools import _normalize_native_plan_additions
+
+        source = {"id": "repro", "status": "succeeded", "description": "reproduce: Reproduce the empty-input failure.",
+                  "evidence": [{"action": "run_cmd", "success": True, "acceptance_ids": ["expected-failure"],
+                                "failed_command_exit_code": 1}]}
+        context = SimpleNamespace(child_run_id=None, native_control_input="Add a separate verification task.")
+        runtime = SimpleNamespace(execution_context=context, tasks=SimpleNamespace(tasks=[source]),
+                                  _interaction_controller=SimpleNamespace(state=dict))
+        plan = SimpleNamespace(id="active", revision=2, status="active", task_ids=("repro", "fix"))
+        arguments = {"plan_id": "active", "expected_revision": 2, "operations": [
+            {"op": "add", "ref": "verify", "priority": 2, "task": {
+                "description": "Verify mean([]) returns zero.",
+                "acceptance": [{"criterion": "The return value is zero", "verification": {
+                    "action": "run_cmd", "arguments": {"command": "python check.py"},
+                }}],
+            }},
+            {"op": "add_command_check", "ref": "other", "description": "Check the regression.",
+             "command": "python test.py"},
+            {"op": "start", "task": "fix"},
+        ]}
+        repaired = _normalize_native_plan_additions(runtime, arguments, plan)["operations"]
+        self.assertEqual(repaired[0]["task"]["priority"], 2)
+        self.assertNotIn("priority", repaired[0])
+        self.assertIn("Reproduce the empty-input failure.", repaired[0]["task"]["description"])
+        self.assertIn("Reproduce the empty-input failure.", repaired[1]["description"])
+        self.assertEqual(repaired[2], arguments["operations"][2])
+        self.assertEqual(arguments["operations"][0]["task"]["description"], "Verify mean([]) returns zero.")
+        source["evidence"].clear()
+        unsupported = _normalize_native_plan_additions(runtime, arguments, plan)["operations"]
+        self.assertEqual(unsupported[0]["task"]["description"], "Verify mean([]) returns zero.")
+        stale = {**arguments, "expected_revision": 1}
+        self.assertIs(_normalize_native_plan_additions(runtime, stale, plan), stale)
+
     def setUp(self):
         self.owners = ExitStack()
         self.addCleanup(self.owners.close)

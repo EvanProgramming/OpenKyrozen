@@ -795,11 +795,12 @@ def _execute_turn_action(self, action: str, args: Any, *, operation_scope: str,
     if (native_plan_start is self.tasks.working_plan
             and call_id_source == "native" and canonical == "update_plan" and expected_spec is not None
             and expected_spec.source == "builtin" and isinstance(args, dict)):
-        from openkyrozen.agent.plan_tools import _update_plan
+        from openkyrozen.agent.plan_tools import _normalize_native_plan_additions, _update_plan
 
         executor = expected_spec.executor
         if (type(executor) is MethodType and executor.__self__ is self
                 and executor.__func__ is _update_plan.__tool_result_executor__):
+            args = _normalize_native_plan_additions(self, args, native_plan_start)
             if native_plan_start is None:
                 from openkyrozen.agent.engine import _requests_one_delegation
 
